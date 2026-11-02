@@ -1,0 +1,14 @@
+# dependencies
+node_modules/
+
+# build output (decide whether to commit lib/ at release time — see MECHANISMS M6)
+lib/
+
+# per-engagement authoritative data (runtime product data, never in source repo)
+.prism/
+
+# test / tool artifacts
+coverage/
+*.tsbuildinfo
+.DS_Store
+Thumbs.db

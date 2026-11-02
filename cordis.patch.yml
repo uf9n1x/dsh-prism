@@ -1,0 +1,19 @@
+# Prism bundle patch — Phase 0 SKELETON.
+# Real rows are finalized in P1 (host plugin) and P2 (preset registration).
+# Do NOT install this bundle until P9; installing now would reference packages
+# that are not yet built.
+#
+# Intended final shape (mirrors dsh-pentest): one self-contained package whose
+# rows all resolve inside the bundle package itself, so it installs from a
+# single directory via plugin_manager install_bundle.
+
+- insert:
+    # Host plugin: registers prism_* tools, protocol section, subagent provider,
+    # event-driven runtime and Remote read-models. (P1–P8)
+    - id: prism-host
+      name: 'dsh-prism'
+
+    # Registers the two agent presets: `prism` (commander) and `prism-worker`
+    # (worker). Implemented in P2.
+    - id: prism-preset-root
+      name: 'dsh-prism/preset-root'
