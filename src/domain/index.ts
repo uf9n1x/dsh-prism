@@ -1,4 +1,5 @@
 export * from './mandate.js'
+export * from './scope.js'
 export * from './assignment.js'
 export * from './report.js'
 export * from './event.js'

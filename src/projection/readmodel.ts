@@ -165,6 +165,7 @@ export interface WorkersView {
     status: string
     output_cursor: number
     job_ref: string | null
+    command: string
   }[]
 }
 
@@ -188,7 +189,8 @@ export async function buildWorkers(engine: PrismEngine): Promise<WorkersView> {
       assignment_id: x.assignment_id,
       status: x.status,
       output_cursor: x.output_cursor,
-      job_ref: x.job_ref
+      job_ref: x.job_ref,
+      command: oneLine(x.command ?? '', 160)
     }))
   }
 }

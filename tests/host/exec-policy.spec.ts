@@ -73,6 +73,43 @@ describe('P6 local execution policy', () => {
     expect(await runtime.engine.listExecutions()).toHaveLength(0)
   })
 
+  it('refuses a command aimed outside the mandate before any process starts', async () => {
+    await fresh()
+    const id = await assignment(['scan', 'read'])
+    await expect(runtime.execStart({ assignment_id: id, command: 'nmap -sT -p 80 10.0.0.9' })).rejects.toThrow(
+      /target "10\.0\.0\.9" is outside mandate scope/i
+    )
+    expect(await runtime.engine.listExecutions()).toHaveLength(0)
+  })
+
+  it('allows a command whose only endpoint is inside the mandate', async () => {
+    await fresh()
+    const id = await assignment(['scan', 'read'])
+    const started = await runtime.execStart({ assignment_id: id, command: 'echo probing 10.0.0.5' })
+    expect(started.execution_id).toBeTruthy()
+  })
+
+  it('does not treat a generic run mandate as a wildcard for writes', async () => {
+    // `run` covers read/scan/fetch only. Before this rule the runtime retried a
+    // refused action as `run`, so a mandate naming just `run` let `rm` through.
+    await fresh({ preAuthorized: true })
+    const id = await assignment(['run'])
+    await expect(runtime.execStart({ assignment_id: id, command: 'echo x > prism-out.txt' })).rejects.toThrow(
+      /authorization denied/i
+    )
+  })
+
+  it('records the command that produced each execution', async () => {
+    await fresh()
+    const id = await assignment(['read'])
+    await runtime.execStart({ assignment_id: id, command: 'echo prism-recorded' })
+    const executions = await runtime.engine.listExecutions()
+    expect(executions).toHaveLength(1)
+    expect(executions[0]?.command).toBe('echo prism-recorded')
+    const view = await runtime.workers()
+    expect(view.executions[0]?.command).toBe('echo prism-recorded')
+  })
+
   it('requires host approval for a write-class command and refuses when no channel exists', async () => {
     await fresh()
     const id = await assignment(['run', 'write'])

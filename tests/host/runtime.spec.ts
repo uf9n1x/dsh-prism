@@ -133,6 +133,104 @@ describe('P3 structured control loop', () => {
     expect(board.frontier.available.map((i) => i.id)).toContain(intent!.id)
   })
 
+  it('a failed report releases the intent without closing it', async () => {
+    // A failure is not a result. It must free the intent for another attempt and
+    // must not point `to` at a fact, or the frontier would show the work as done.
+    const m = await mandate()
+    const [intent] = await runtime.reason([{ description: 'exploit the form', from: ['goal'] }])
+    const dispatched = await runtime.dispatch({ intent_id: intent!.id, mandate_id: m.id, brief: 'try' }, fakeOps())
+    await runtime.report({
+      assignment_id: dispatched.assignment.id,
+      kind: 'failed',
+      text: 'payload rejected',
+      facts: [{ title: 'form rejects payload', summary: '422 on every variant tried' }]
+    })
+    const after = await runtime.engine.store.getIntent(intent!.id)
+    expect(after.to).toBeNull()
+    expect(after.claimed_by).toBeNull()
+    const board = await runtime.board()
+    expect(board.frontier.done).toHaveLength(0)
+    expect(board.frontier.available.map((i) => i.id)).toContain(intent!.id)
+  })
+
+  it('an identical observation reuses the existing fact instead of cloning it', async () => {
+    const m = await mandate()
+    const [intent] = await runtime.reason([{ description: 'fingerprint', from: ['goal'] }])
+    const dispatched = await runtime.dispatch({ intent_id: intent!.id, mandate_id: m.id, brief: 'banner' }, fakeOps())
+    const first = await runtime.report({
+      assignment_id: dispatched.assignment.id,
+      kind: 'progress',
+      text: 'banner',
+      facts: [{ title: 'Apache version', summary: 'Apache/2.4.7 (Ubuntu)' }]
+    })
+    const second = await runtime.report({
+      assignment_id: dispatched.assignment.id,
+      kind: 'progress',
+      text: 'banner again',
+      facts: [{ title: '  apache VERSION ', summary: 'Apache/2.4.7   (Ubuntu)' }]
+    })
+    expect(second.fact_ids).toEqual(first.fact_ids)
+    expect(second.deduped).toBe(1)
+    expect((await runtime.board()).facts).toHaveLength(1)
+  })
+
+  it('refuses to dispatch the same intent twice', async () => {
+    const m = await mandate()
+    const [intent] = await runtime.reason([{ description: 'one worker only', from: ['goal'] }])
+    await runtime.dispatch({ intent_id: intent!.id, mandate_id: m.id, brief: 'a' }, fakeOps())
+    await expect(runtime.dispatch({ intent_id: intent!.id, mandate_id: m.id, brief: 'b' }, fakeOps())).rejects.toThrow(
+      /already/i
+    )
+    expect(await runtime.engine.listAssignments()).toHaveLength(1)
+  })
+
+  it('a resumed attempt records what it takes over from', async () => {
+    const m = await mandate()
+    const [intent] = await runtime.reason([{ description: 'cold resume', from: ['goal'] }])
+    const first = await runtime.dispatch({ intent_id: intent!.id, mandate_id: m.id, brief: 'scan' }, fakeOps())
+    await runtime.engine.setAssignmentStatus(first.assignment.id, 'interrupted')
+    await runtime.engine.store.updateIntent(intent!.id, { claimed_by: null })
+    const log: string[] = []
+    const resumed = await runtime.dispatch(
+      { intent_id: intent!.id, mandate_id: m.id, brief: 'continue', resume_of: first.assignment.id },
+      fakeOps(log)
+    )
+    expect(resumed.assignment.resume_of).toBe(first.assignment.id)
+    expect(resumed.assignment.status).toBe('running')
+    expect((await runtime.engine.getAssignment(first.assignment.id)).status).toBe('interrupted')
+  })
+
+  it('refuses to resume an attempt that is not interrupted', async () => {
+    const m = await mandate()
+    const [intent] = await runtime.reason([{ description: 'finished attempt', from: ['goal'] }])
+    const first = await runtime.dispatch({ intent_id: intent!.id, mandate_id: m.id, brief: 'scan' }, fakeOps())
+    await runtime.engine.setAssignmentStatus(first.assignment.id, 'ready')
+    await runtime.engine.store.updateIntent(intent!.id, { claimed_by: null })
+    await expect(
+      runtime.dispatch(
+        { intent_id: intent!.id, mandate_id: m.id, brief: 'x', resume_of: first.assignment.id },
+        fakeOps()
+      )
+    ).rejects.toThrow(/only an interrupted attempt can be resumed/i)
+  })
+
+  it('kill records the reason it was given', async () => {
+    const m = await mandate()
+    const [intent] = await runtime.reason([{ description: 'stop me', from: ['goal'] }])
+    const dispatched = await runtime.dispatch({ intent_id: intent!.id, mandate_id: m.id, brief: 'scan' }, fakeOps())
+    await runtime.kill(dispatched.assignment.id, fakeOps(), 'scope revoked by client')
+    const reports = await runtime.engine.listReports()
+    expect(reports.at(-1)?.text).toContain('scope revoked by client')
+  })
+
+  it('killing a finished assignment says so instead of leaking a state-machine error', async () => {
+    const m = await mandate()
+    const [intent] = await runtime.reason([{ description: 'already done', from: ['goal'] }])
+    const dispatched = await runtime.dispatch({ intent_id: intent!.id, mandate_id: m.id, brief: 'scan' }, fakeOps())
+    await runtime.engine.setAssignmentStatus(dispatched.assignment.id, 'failed')
+    await expect(runtime.kill(dispatched.assignment.id, fakeOps())).rejects.toThrow(/is already failed; there is nothing to stop/i)
+  })
+
   it('a worker brief wraps the commander text as untrusted data', () => {
     const brief = renderWorkerBrief({
       assignmentId: 'a001',

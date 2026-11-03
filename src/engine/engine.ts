@@ -9,6 +9,7 @@ import { mkdir, readdir } from 'node:fs/promises'
 import { GraphStore } from '../graph/store.js'
 import { atomicWriteJson, existsPath, readJson } from '../graph/lock.js'
 import { ENTITY_DIRS, type Intent } from '../graph/types.js'
+import { firstOutOfScope } from '../domain/scope.js'
 import {
   ASSIGNMENT_STATUSES,
   AssignmentSchema,
@@ -40,6 +41,19 @@ export const HIGH_RISK_ACTIONS = ['exploit', 'credential', 'write', 'submit', 'e
 
 /** Mandate strengths that always require confirmation, regardless of the action name. */
 const CONFIRM_STRENGTHS: readonly MandateStrength[] = ['write', 'exploit']
+
+/**
+ * Action classes a generic `run` entry covers.
+ *
+ * `run` is how a mandate says "ordinary command execution", and reconnaissance
+ * is ordinary: read/scan/fetch all have `side_effect: read`. It deliberately
+ * does NOT cover write, credential, exploit or submit — those must be named.
+ * An earlier version of the runtime retried any refused action as `run`, which
+ * made `run` a wildcard: a mandate that allowed `run` allowed `rm` and `hydra`
+ * with it, as long as confirmation was settled (and under standing
+ * authorization it always was).
+ */
+const RUN_COVERED_ACTIONS: readonly string[] = ['read', 'scan', 'fetch']
 
 /** Allowed assignment transitions; anything else is a programming error, not a domain event. */
 const TRANSITIONS: Record<AssignmentStatus, readonly AssignmentStatus[]> = {
@@ -95,6 +109,12 @@ export interface AuthorizeRequest {
   assignment_id: string
   action: string
   target?: string
+  /**
+   * Every endpoint the pending command names. The runtime extracts these from
+   * the command line so `scope.targets` bounds what actually runs, not only what
+   * the caller chose to declare.
+   */
+  targets?: readonly string[]
   backend?: Backend
   /** A human approval already collected by the host for this exact action. */
   confirmed?: boolean
@@ -308,9 +328,6 @@ export class PrismEngine {
     if (assignment === null) {
       throw new Error(`unknown assignment ${input.assignment_id} for report`)
     }
-    if (input.kind === 'cancelled' || input.kind === 'failed') {
-      // report only records intent; the assignment transition is a separate domain commit
-    }
     const id = await this.store.nextId('report', 'r', ENTITY_DIRS.reports)
     const report = ReportSchema.parse({
       id,
@@ -469,6 +486,7 @@ export class PrismEngine {
     assignment_id: string
     job_ref?: string | null
     side_effect?: ExecutionRecord['side_effect']
+    command?: string
   }): Promise<ExecutionRecord> {
     await this.getAssignment(input.assignment_id)
     const id = await this.store.nextId('execution', 'x', ENTITY_DIRS.executions)
@@ -476,6 +494,7 @@ export class PrismEngine {
       id,
       assignment_id: input.assignment_id,
       job_ref: input.job_ref ?? null,
+      command: input.command ?? '',
       status: 'running',
       output_cursor: 0,
       side_effect: input.side_effect ?? 'none',
@@ -532,7 +551,7 @@ export class PrismEngine {
     if (await this.isRevoked(mandate.id)) {
       return { allowed: false, requiresConfirm: false, reason: `mandate ${mandate.id} is revoked; assignment is paused` }
     }
-    if (!mandate.scope.actions.includes(request.action)) {
+    if (!this.actionAllowed(mandate.scope.actions, request.action)) {
       return {
         allowed: false,
         requiresConfirm: false,
@@ -543,12 +562,14 @@ export class PrismEngine {
     if (!mandate.scope.backends.includes(backend)) {
       return { allowed: false, requiresConfirm: false, reason: `backend "${backend}" is outside mandate scope` }
     }
-    if (request.target !== undefined) {
+    const endpoints = [...(request.target === undefined ? [] : [request.target]), ...(request.targets ?? [])]
+    if (endpoints.length > 0) {
       if (mandate.scope.targets.length === 0) {
         return { allowed: false, requiresConfirm: false, reason: 'mandate names no targets' }
       }
-      if (!mandate.scope.targets.includes(request.target)) {
-        return { allowed: false, requiresConfirm: false, reason: `target "${request.target}" is outside mandate scope` }
+      const outside = firstOutOfScope(endpoints, mandate.scope.targets)
+      if (outside !== null) {
+        return { allowed: false, requiresConfirm: false, reason: `target "${outside}" is outside mandate scope` }
       }
     }
     const requiresConfirm =
@@ -558,6 +579,12 @@ export class PrismEngine {
       return { allowed: true, requiresConfirm: true, reason: `action "${request.action}" requires confirmation` }
     }
     return { allowed: true, requiresConfirm: false }
+  }
+
+  /** Whether a mandate's action list covers this action class. */
+  private actionAllowed(actions: readonly string[], action: string): boolean {
+    if (actions.includes(action)) return true
+    return RUN_COVERED_ACTIONS.includes(action) && actions.includes('run')
   }
 
   // -- integrity -----------------------------------------------------------

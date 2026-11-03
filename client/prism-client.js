@@ -64,6 +64,7 @@ window.__ModuleLoader__.load({
         backend: '后端',
         attempts: '尝试',
         resume: '接班',
+        recentReports: '最近回报',
         cursor: '游标',
         job: '作业'
       },
@@ -105,6 +106,7 @@ window.__ModuleLoader__.load({
         backend: 'Backend',
         attempts: 'Tries',
         resume: 'Resume',
+        recentReports: 'Recent reports',
         cursor: 'Cursor',
         job: 'Job'
       }
@@ -405,6 +407,17 @@ window.__ModuleLoader__.load({
     function clip(value, max) {
       const text = ONE_LINE(value)
       return text.length <= max ? text : `${text.slice(0, max - 1)}…`
+    }
+
+    /** Join non-empty row fragments with the middot separator. */
+    function joinParts(parts) {
+      const kept = parts.filter((part) => part !== null && part !== undefined && part !== '')
+      const out = []
+      kept.forEach((part, index) => {
+        if (index > 0) out.push(' · ')
+        out.push(part)
+      })
+      return out
     }
 
     /**
@@ -789,7 +802,10 @@ window.__ModuleLoader__.load({
                       h(
                         'div',
                         { className: 'prism-row-sub' },
-                        [
+                        joinParts([
+                          execution.command === undefined || execution.command === ''
+                            ? null
+                            : h('code', { className: 'prism-mono' }, clip(execution.command, 80)),
                           `${t.cursor} ${execution.output_cursor}`,
                           execution.job_ref === null || execution.job_ref === undefined
                             ? null
@@ -797,9 +813,7 @@ window.__ModuleLoader__.load({
                           execution.exit_code === undefined || execution.exit_code === null
                             ? null
                             : `exit ${execution.exit_code}`
-                        ]
-                          .filter((part) => part !== null)
-                          .join(' · ')
+                        ])
                       )
                     )
                   )
@@ -916,6 +930,37 @@ window.__ModuleLoader__.load({
         ),
         h(Distribution, { t, title: t.assignments, record: payload.assignments }),
         h('div', { style: { marginTop: 12 } }, h(Distribution, { t, title: t.effects, record: payload.effects })),
+        h(
+          'div',
+          { style: { marginTop: 12 } },
+          h(
+            Card,
+            { title: t.recentReports, count: Array.isArray(payload.reports) ? payload.reports.length : 0 },
+            !Array.isArray(payload.reports) || payload.reports.length === 0
+              ? h(Empty, { t })
+              : payload.reports
+                  .slice()
+                  .reverse()
+                  .map((report) =>
+                    h(
+                      'div',
+                      { className: 'prism-row', key: report.id },
+                      h('span', { className: 'prism-id prism-mono' }, report.id),
+                      h(
+                        'div',
+                        { className: 'prism-row-main' },
+                        h(
+                          'div',
+                          { className: 'prism-row-title', style: { display: 'flex', gap: 8, alignItems: 'center' } },
+                          h(StateChip, { state: report.kind }),
+                          h('span', { className: 'prism-mono', style: { color: 'var(--p-muted)' } }, report.assignment_id)
+                        ),
+                        h('div', { className: 'prism-row-sub' }, clip(report.text, 240))
+                      )
+                    )
+                  )
+          )
+        ),
         h(
           'p',
           { style: { margin: '10px 2px 0', fontSize: 11.5, color: 'var(--p-faint)' } },

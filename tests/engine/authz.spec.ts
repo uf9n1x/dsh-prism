@@ -53,6 +53,29 @@ describe('PrismEngine authorization (Host-enforced mandate)', () => {
     expect(d.reason).toMatch(/target/i)
   })
 
+  it('denies every endpoint a command names, not only the declared one', async () => {
+    const { assignment } = await setup('read', ['scan'])
+    const d = await engine.authorize({
+      assignment_id: assignment.id,
+      action: 'scan',
+      targets: ['10.0.0.5', '10.0.0.9']
+    })
+    expect(d.allowed).toBe(false)
+    expect(d.reason).toContain('10.0.0.9')
+    const ok = await engine.authorize({ assignment_id: assignment.id, action: 'scan', targets: ['10.0.0.5'] })
+    expect(ok.allowed).toBe(true)
+  })
+
+  it('lets a generic run mandate cover reconnaissance but not destructive classes', async () => {
+    const { assignment } = await setup('read', ['run'])
+    expect((await engine.authorize({ assignment_id: assignment.id, action: 'read' })).allowed).toBe(true)
+    expect((await engine.authorize({ assignment_id: assignment.id, action: 'scan' })).allowed).toBe(true)
+    const write = await engine.authorize({ assignment_id: assignment.id, action: 'write' })
+    expect(write.allowed).toBe(false)
+    expect(write.reason).toMatch(/action/i)
+    expect((await engine.authorize({ assignment_id: assignment.id, action: 'exploit' })).allowed).toBe(false)
+  })
+
   it('requires confirmation for a high-strength (exploit) mandate', async () => {
     const { assignment } = await setup('exploit', ['exploit'])
     const d = await engine.authorize({ assignment_id: assignment.id, action: 'exploit', target: '10.0.0.5' })

@@ -12,6 +12,12 @@ export const ExecutionRecordSchema = z.object({
   id: z.string().regex(/^x\d{3,}$/, 'execution id must be xNNN'),
   assignment_id: z.string().min(1),
   job_ref: z.string().nullable().default(null),
+  /**
+   * The command line this record refers to (secrets redacted before write).
+   * Without it an audit could see that an execution happened but not what ran —
+   * `job_ref` is an opaque handle and dies with the process.
+   */
+  command: z.string().max(4000).default(''),
   status: z.enum(EXEC_STATUSES).default('running'),
   output_cursor: z.number().int().nonnegative().default(0),
   side_effect: z.enum(SIDE_EFFECTS).default('none'),

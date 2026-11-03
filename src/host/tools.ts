@@ -366,13 +366,17 @@ export function commanderTools(ctx: AgentContext, factory: RuntimeFactory): Tool
     ),
     tool(
       'prism_spawn',
-      'Dispatch one ready intent to a fresh prism-worker subagent bound to an existing mandate. Returns immediately with the assignment id; the worker reports back asynchronously.',
+      'Dispatch one ready intent to a fresh prism-worker subagent bound to an existing mandate. Returns immediately with the assignment id; the worker reports back asynchronously. To take over an interrupted attempt, pass its id as resume_of.',
       objectSchema(
         {
           intent_id: { type: 'string' },
           mandate_id: { type: 'string' },
           brief: { type: 'string', description: 'Precise task brief for the worker. Target text must be quoted as data.' },
-          backend: { type: 'string', enum: ['local', 'kali'] }
+          backend: { type: 'string', enum: ['local', 'kali'] },
+          resume_of: {
+            type: 'string',
+            description: 'Interrupted assignment this attempt takes over from. The intent must be the same and unclaimed.'
+          }
         },
         ['intent_id', 'mandate_id', 'brief']
       ),
@@ -418,13 +422,15 @@ export function commanderTools(ctx: AgentContext, factory: RuntimeFactory): Tool
         const rt = factory.get(ctx, exec)
         const recovery = await rt.recovery()
         const backends = await rt.health()
+        const integrity = await rt.engine.audit()
         return {
           commander_tools: COMMANDER_TOOL_NAMES,
           worker_tools: WORKER_TOOL_NAMES,
           presets: ['prism', 'prism-worker'],
           backends,
           root: rt.root,
-          recovery
+          recovery,
+          integrity
         }
       }
     ),

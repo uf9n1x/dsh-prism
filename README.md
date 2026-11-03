@@ -11,7 +11,7 @@ Prism 是 DSH Desktop 的一个**自包含 bundle**：注册 **「Prism 渗透�
 
 | 项 | 状态 |
 |---|---|
-| 源码 + 测试 | ✅ `src/` **34** 个 TS 文件 + `client/` 纯 JS bundle；`tests/` **23 文件 / 200 项全绿** |
+| 源码 + 测试 | ✅ `src/` **35** 个 TS 文件 + `client/` 纯 JS bundle；`tests/` **24 文件 / 222 项全绿** |
 | 构建 | ✅ `npx tsc -p tsconfig.json` → exit 0，产出 `lib/` |
 | 真实安装 | ✅ 独立 profile 上 `dsh plugin add` 成功，页面出现「Prism 渗透模式」 |
 | 真实卸载 | ✅ `plugin remove` 后 bundle 清单与配置零 Prism 行 |
@@ -134,11 +134,15 @@ Done in 610ms using pnpm v11.28.5
 
 ## 4.5 界面：Prism 面板从哪进
 
-- **入口**：Prism 会话的**会话头部右侧**出现一个 `Prism` 按钮 —— 只有在
-  「该会话 preset = `prism`」**且**「工作目录里存在 `.prism/` engagement」时才渲染；
-  两个条件任一不满足时组件返回 `null`，**不产生任何可见界面**（普通编码/PPT 会话完全看不到）。
-- **面板**：点开后是一个覆盖层面板，内部五个页签：**图谱 / 前沿 / 工兵 / 证据 / 报告**，
-  全部只读 `.prism/`，每 4 秒刷新一次（仅在面板打开且页面可见时）。
+- **入口**：`conversation.view#prism` —— 与「对话 / 轨迹」**同一排**的会话页签（D27）。
+  打开 Prism 会话即出现在页签行，点击即进入面板，不再是右上角按钮 + 模态弹窗。
+- **面板**：页签内嵌，顶部一行 `origin · goal` + 实时/刷新，四格 KPI（事实 / 待办意图 /
+  在跑工兵 / 受阻），下面五个子页签：**图谱 / 前沿 / 工兵 / 证据 / 报告**，
+  全部只读 `.prism/`，每 4 秒刷新一次（仅在页签可见且页面处于前台时）。
+- **图谱**：同层 SVG，事实 / 意图 / 派单三列顶部对齐；边为贝塞尔曲线（结果边虚线）；
+  节点可点选、可键盘聚焦，悬停高亮相邻节点。
+- **已知代价**：该 slot 的注册项只有 `id/order/label`，**无法按会话隐藏**，
+  所以非 Prism 会话也会看到这个页签，点开是一句空态说明（README §8 第 11 条）。
 - 数据来自 `GET /prism/view?view=<name>&session=<id>`（同源只读，见 `src/host/webrow.ts`）；
   该路由**只接受 session id，不接受任何路径参数**。
 
@@ -155,13 +159,13 @@ Done in 610ms using pnpm v11.28.5
 
 ### 典型推进流程
 ```text
-prism_init            # 建立 engagement，由宿主审批后铸造 Mandate（模型无法自己提权）
+prism_init            # 建立 engagement 并铸造 Mandate（模型无法自己提权；范围写进凭证）
 prism_reason          # 读事实 → 写出候选 Intent
-prism_spawn           # 派单给工兵（立即返回，不阻塞）
+prism_spawn           # 派单给工兵（立即返回，不阻塞）；接班时带 resume_of
   └─ worker: prism_exec_start → prism_exec_output(游标轮询) → prism_exec_stop
   └─ worker: prism_worker_report  # 结构化回报：progress/waiting/ready/blocked/failed
 prism_board           # 事实回图后看 frontier
-prism_msg / prism_kill# 纠偏 / 止损；接班用 resume_of
+prism_msg / prism_kill# 纠偏 / 止损；接班的 assignment 会记 resume_of
 prism_verify          # 可选：独立复核
 ```
 
@@ -173,10 +177,13 @@ prism_verify          # 可选：独立复核
 
 | 崩溃时的状态 | 恢复后 | 能否自动继续 |
 |---|---|---|
-| `Assignment.status = running` | → `interrupted`，并计入 `resumable` | ✅ 可续：新建 Assignment 带 `resume_of` |
+| `Assignment.status = running` | → `interrupted`，并计入 `resumable` | ✅ 可续：`prism_spawn` 带 `resume_of` 派一个新 assignment |
 | `Effect.status = pending` | 保留在 outbox | ✅ 下次 `drain()` 执行 |
 | `Effect.status = unknown`（结果不明） | 进 `review_required` | ❌ **禁止自动重放**，必须人工核查 |
 | `Effect.status = failed`（幂等执行器抛错） | 保持 `failed` | ❌ 需显式 `retry()` |
+
+**意图只在 `ready` 且带事实时关闭**：`failed` / `cancelled` 的终态回报会释放 claim，让意图回到
+frontier 重新派单——失败不是结果（D30）。
 
 **同一 `dedupe_key` 的事件只会路由一次**：重复入站仍持久化（留痕），但不会重复派单。
 
@@ -186,6 +193,8 @@ prism_verify          # 可选：独立复核
 
 - **Mandate 不可变**：`{ scope: { targets[], actions[], backends[] }, strength: 'read'|'confirm'|'write'|'exploit' }`。撤销写独立的 `mandate_revocations/` 记录，并把受影响的活动 Assignment 置 `paused`。
 - **模型不能文本提权**：范围/目标/后端/强度全部在 `PrismEngine.authorize()` 里判定，提示词怎么写都越不过去。
+  `execStart` 会在启动前从命令行解析端点（URL host / IPv4 / CIDR / `user@host`）并逐个比对 targets，
+  越界即拒绝，进程不会启动（D29）。
 - **默认拒绝**：`classifyCommand()` 把未知命令一律归为 `requires_confirm: true`；无审批通道时 `denyAllApprovals` 一律拒绝（fail-closed）。
 - **凭据脱敏**：进程输出与投影结果返回前经 `redactSecrets()`。
 - **目标内容是数据不是指令**：注入给 worker/指挥官时用 `<<UNTRUSTED_DATA>> ... <<END_UNTRUSTED_DATA>>` 包裹，并转义伪造的闭合标记、剥离控制字符与 bidi 覆盖、HTML 转义。
@@ -225,32 +234,36 @@ prism_verify          # 可选：独立复核
 
 > 按诚实原则，以下项**没有被写成已完成**。已经闭环的项从本清单移除，但证据留在
 > `docs/evidence/`：面板像素（`p8-ui.md` §8）、`application: applied` 与覆盖安装（`p9-applied.md`）、
-> SSH 真实联通（`p7-kali.md`）、**模型驱动的跨进程派单**（`lab-run.md`，真实靶场上跑通）都已销项。
+> SSH 真实联通（`p7-kali.md`）、**模型驱动的跨进程派单**（`lab-run.md`）、
+> **targets 对实际命令的约束 / 执行记录含命令 / 事实去重 / 接班**（D29–D31，2026-11-03 审计轮）都已销项。
 
-1. **⚠️ mandate 的 `targets` 不约束实际命令。** `authorize()` 只在调用方显式传 `target` 时校验，
-   而 `execStart` 从不传；`actions`/`backends` 是硬约束，`targets` 目前是**声明性**的。
-   要做实需要在执行前从命令里解析目标，属设计改动（`docs/evidence/lab-run.md` §5 第 2 条）。
-2. **⚠️ 执行记录不含命令原文。** `ExecutionRecord` 有 `job_ref`/`result`/`side_effect`，
-   但没有 `command`，审计时无法从引擎侧还原"哪条命令产生了哪条记录"（同上 §5 第 1 条）。
-3. **⚠️ 事实没有去重/合并。** 同一结论被多次观测会产生多条 fact（靶场跑里出现了 f013/f014 与 f008–f010 重复）。
+1. **⚠️ 命令里解析不出端点时不做目标校验。** `targetsInCommand()` 只认 URL host、IPv4/CIDR 和
+   `user@host`；`whoami`、`cat /etc/passwd` 这类本机命令不产生端点，因此不会被目标列表拦住
+   （拦住它们的是 `actions`，不是 `targets`）。这是 D29 明说的残余边界。
+2. **⚠️ 回环地址恒在范围内。** `127.0.0.1` / `localhost` / `::1` / `0.0.0.0` 视为本机，不受 targets 约束；
+   如果目标是通过本机代理/端口转发访问的，targets 拦不住。
+3. **⚠️ 事实去重只认完全相同的 `title+summary`。** 换个说法的同一结论仍会产生新 fact（D30）。
 4. **⚠️ `ctx.credentials` 引用式取凭据未接入**。当前靠输出脱敏 + 不落盘兜底；
    `kali.identityFile` 要用户自己填密钥**路径**，没有走宿主的凭据服务。
-5. **⚠️ Kali 镜像本体未实测**。SSH 通道已在 Ubuntu 上真机验证（D23），但目标机是不是 Kali 未测。
-6. **⚠️ Linux / macOS 本机执行后端未实测**（仅 Windows 路径验证）。
-7. **⚠️ Watchdog 无自动触发源**。`src/runtime/watchdog.ts` 的四操作与准入检查已实现并测试，但"谁在何时调用 `scan()`"尚未接入事件流。
-8. **⚠️ 护栏阈值未独立成模块**。原计划的 `runtime/guardrails.ts`（maxAutoTurns=40 / cooldown / human-reset）未拆出；轮询抑制由 fast path 的设计本身保证（无定时器），但自动轮次上限未实现。
-9. **⚠️ 五视图的数据通道不是 `@Remote`**。用的是同源只读 HTTP 路由（typert codegen 只在 DSH monorepo 的 `build:lib` 里）。视图契约独立于通道，将来可平移（D22）。
-10. **⚠️ 客户端 bundle 为手写纯 JS，无类型检查**。有 8 项契约测试，但没有 TS 类型约束。
-11. **⚠️ `config.kali` 必须写在 preset patch 行里**，等于复制一份 bundle 改配置；尚未做成用户级设置项。
-12. **⚠️ 覆盖安装只测了「同路径 remove + install」**，没有构造跨版本 diff 的升级场景。
-13. **⚠️ 普通会话也会看到「Prism」页签。** `conversation.view` 的注册项只有 `id/order/label`，
+5. **⚠️ `unknown` 副作用没有工具可结案。** 引擎有 `resolveUnknownEffect()`，但没有对应工具，
+   目前只能由运维直接改 `effects/*.json` 或调代码。README §6 说的"人工核查"就是这个意思。
+6. **⚠️ 多进程同时写同一 `.prism/` 不支持**（D26 的后果）：同一进程内靠"每 root 只恢复一次"兜住，
+   跨进程没有租约。
+7. **⚠️ Kali 镜像本体未实测**。SSH 通道已在 Ubuntu 上真机验证（D23），但目标机是不是 Kali 未测。
+8. **⚠️ Linux / macOS 本机执行后端未实测**（仅 Windows 路径验证）。
+9. **⚠️ Watchdog 无自动触发源**。`src/runtime/watchdog.ts` 的四操作与准入检查已实现并测试，
+   但除测试外没有调用者——`PrismRuntime.watchdog()` 返回的实例不会被任何事件流驱动。
+10. **⚠️ 护栏阈值未独立成模块**。原计划的 `runtime/guardrails.ts`（maxAutoTurns=40 / cooldown / human-reset）未拆出；轮询抑制由 fast path 的设计本身保证（无定时器），但自动轮次上限未实现。
+11. **⚠️ 五视图的数据通道不是 `@Remote`**。用的是同源只读 HTTP 路由（typert codegen 只在 DSH monorepo 的 `build:lib` 里）。视图契约独立于通道，将来可平移（D22）。
+12. **⚠️ 客户端 bundle 为手写纯 JS，无类型检查**。有 13 项契约测试，但没有 TS 类型约束。
+13. **⚠️ `config.kali` 必须写在 preset patch 行里**，等于复制一份 bundle 改配置；尚未做成用户级设置项。
+14. **⚠️ 覆盖安装只测了「同路径 remove + install」**，没有构造跨版本 diff 的升级场景。
+15. **⚠️ 普通会话也会看到「Prism」页签。** `conversation.view` 的注册项只有 `id/order/label`，
     无法按会话隐藏，所以非 prism 会话点开是一句空态说明。这是 D27 里明说的代价：换成入口在用户
     预期位置、面板不再是模态弹窗。宿主若给该 slot 加上按会话过滤，这条应消失。
-14. **⚠️ 默认不弹审批。** 因为插件只用于**已确定授权**的任务（D28）。范围检查（actions / backends /
+16. **⚠️ 默认不弹审批。** 因为插件只用于**已确定授权**的任务（D28）。范围检查（actions / backends /
     目标 / assignment 状态）一条都没少，但如果你要在别人的环境里用，请先在 preset 行设
     `config.preAuthorized: false` 把人工闸门开回来。
-
----
 
 ## 9. 数据模型速查
 
@@ -265,7 +278,7 @@ prism_verify          # 可选：独立复核
 ├── reports/rNNN.json             # { assignment_id, kind, text, facts[], evidence[] }
 ├── events/vNNN.json              # { source, dedupe_key, owner_session, status, filter_reason }
 ├── effects/xNNN.json             # Outbox: { kind, payload, status:'pending'|'done'|'failed'|'unknown', idempotent }
-├── executions/xNNN.json          # { assignment_id, job_ref, status, output_cursor, side_effect, result }
+├── executions/xNNN.json          # { assignment_id, job_ref, command, status, output_cursor, side_effect, result }
 ├── hints/ workers/ messages/ evidence/
 ```
 
@@ -279,7 +292,7 @@ prism_verify          # 可选：独立复核
 ```bash
 npx tsc -p tsconfig.json --noEmit    # 类型检查
 npx tsc -p tsconfig.json             # 构建 lib/
-npx vitest run                       # 全量：23 files / 200 tests
+npx vitest run                       # 全量：24 files / 222 tests
 npx vitest run tests/host            # 单目录
 ```
 
