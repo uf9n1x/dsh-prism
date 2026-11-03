@@ -2,6 +2,7 @@
   "name": "dsh-prism",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@10.34.9",
   "description": "Prism — authorized engagement super-agent for DSH Desktop: a commander drives replaceable worker subagents through a persistent fact-intent graph.",
   "type": "module",
   "main": "./lib/index.js",

@@ -14,9 +14,15 @@
 - **五视图只读面板**：图谱 / 前沿 / 工兵 / 证据 / 报告，同源只读 `.prism/`，会话页签内 4 秒自动刷新。
 - **可替换执行后端**：Windows 本机异步执行（进程树管理、游标增量输出）+ 可选 Kali（系统 OpenSSH，失败不伪造）。
 
-## 安装（从源码）
+## 安装
 
-本项目以源码形态分发，构建后作为本地 bundle 安装：
+### 方式一：从 Release 安装（推荐，免构建）
+
+```powershell
+dsh plugin --profile desktop add https://github.com/uf9n1x/dsh-prism/releases/latest/download/dsh-prism.tar.gz
+```
+
+### 方式二：从源码安装
 
 ```bash
 git clone https://github.com/uf9n1x/dsh-prism.git
