@@ -1,0 +1,10 @@
+# Line endings are LF in the repository and in the working tree.
+#
+# core.autocrlf=true would check these files out as CRLF, and the preset reader
+# parses YAML text with `\n`-anchored patterns: a CRLF checkout silently stopped
+# the worker preset from activating once already. Pin it here so the checkout
+# cannot reintroduce that failure on another machine.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
