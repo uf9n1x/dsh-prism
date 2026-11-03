@@ -342,11 +342,12 @@ export function commanderTools(ctx: AgentContext, factory: RuntimeFactory): Tool
       async (_args, exec) => {
         const rt = factory.get(ctx, exec)
         const recovery = await rt.recovery()
+        const backends = await rt.health()
         return {
           commander_tools: COMMANDER_TOOL_NAMES,
           worker_tools: WORKER_TOOL_NAMES,
           presets: ['prism', 'prism-worker'],
-          backends: { local: 'windows host, async start/output/stop', kali: 'optional, unverified unless healthCheck succeeds' },
+          backends,
           root: rt.root,
           recovery
         }

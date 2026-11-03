@@ -4,6 +4,8 @@
 // surface: generating a Remote contract needs the DSH monorepo's `build:lib`
 // codegen, which an out-of-tree bundle cannot run (see D22). The route is
 // strictly read-only, session-scoped, and never accepts a path from the client.
+import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { PrismEngine } from '../engine/engine.js'
 import { buildBoard, buildEvidence, buildGraph, buildReport, buildWorkers } from '../projection/readmodel.js'
@@ -89,6 +91,35 @@ export interface SessionFacts {
   cwd: string | null
   /** Committed agent preset id, or null when the session has not chosen one. */
   preset: string | null
+  /** Which source the preset answer came from; purely diagnostic. */
+  preset_source?: PresetSource
+}
+
+export type PresetSource = 'registry' | 'header' | 'persistence' | 'persisted-rows' | 'none'
+
+const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+
+/**
+ * Last resort: the durable session row.
+ *
+ * `header.agentPreset` is the value captured when the session was created, and
+ * the live projection is empty for a session this process has not activated. A
+ * preset the user switched to afterwards is only visible in the stored row. The
+ * read is best-effort: any structural change makes it return null rather than
+ * throw, and the caller degrades to the older sources.
+ */
+function persistedRowsPreset(sessionId: string): string | null {
+  if (!SESSION_ID_PATTERN.test(sessionId)) return null
+  try {
+    const home = process.env.DSH_HOME ?? process.env.DSH_HOME_DIR ?? join(homedir(), '.dsh')
+    const file = join(home, 'storages', 'session_projcache', 'sessions', `${sessionId}.json`)
+    const doc = JSON.parse(readFileSync(file, 'utf8')) as any
+    const row = doc?.record?.rows?.agentPreset
+    const value = row !== null && typeof row === 'object' ? row.val : row
+    return typeof value === 'string' && value.length > 0 ? value : null
+  } catch {
+    return null
+  }
 }
 
 export type SessionResolver = (sessionId: string) => SessionFacts
@@ -108,7 +139,7 @@ export interface MinimalResponse {
 }
 
 /** Build the request handler. Pure apart from the injected resolver. */
-export function createViewHandler(resolveFacts: SessionResolver) {
+export function createViewHandler(resolveFacts: SessionResolver, probe?: (sessionId: string) => Promise<unknown>) {
   return async function handle(request: MinimalRequest, response: MinimalResponse): Promise<void> {
     const send = (status: number, body: ViewOk | ViewError): void => {
       response.statusCode = status
@@ -130,6 +161,18 @@ export function createViewHandler(resolveFacts: SessionResolver) {
       return
     }
 
+    // Operator diagnostic: why did this session get (or not get) the panel?
+    // Read-only, session-scoped, and it never returns file contents.
+    if (probe !== undefined && /(?:^|[?&])probe=1(?:&|$)/.test(request.url ?? '')) {
+      send(200, {
+        ok: true,
+        view: parsed.view,
+        generated_at: new Date().toISOString(),
+        payload: await probe(parsed.sessionId)
+      })
+      return
+    }
+
     try {
       const facts = resolveFacts(parsed.sessionId)
       // A coding/standard/PPT session never sees Prism data, even when its
@@ -139,7 +182,7 @@ export function createViewHandler(resolveFacts: SessionResolver) {
           ok: true,
           view: parsed.view,
           generated_at: new Date().toISOString(),
-          payload: { present: false, reason: 'not-a-prism-session', preset: facts.preset }
+          payload: { present: false, reason: 'not-a-prism-session', preset: facts.preset, preset_source: facts.preset_source }
         })
         return
       }
@@ -186,35 +229,53 @@ export function createSessionResolver(ctx: any): SessionResolver {
     }
     if (session === undefined || session === null) {
       const record = persistenceHeader(ctx, sessionId)
-      return { cwd: absoluteOrNull(record?.cwd), preset: stringOrNull(record?.agentPreset) }
+      const persisted = stringOrNull(record?.agentPreset)
+      return {
+        cwd: absoluteOrNull(record?.cwd),
+        preset: persisted,
+        preset_source: persisted === null ? 'none' : 'persistence'
+      }
     }
 
-    const preset = presetOf(ctx, session)
+    const { preset, source } = presetOf(ctx, session, sessionId)
     const headerCwd = absoluteOrNull(session?.header?.cwd)
-    if (headerCwd !== null) return { cwd: headerCwd, preset }
+    if (headerCwd !== null) return { cwd: headerCwd, preset, preset_source: source }
 
     const wd = ctx?.get?.('workingDirectory') ?? ctx?.workingDirectory
     if (wd !== undefined) {
       try {
         const dir = absoluteOrNull(wd.get(session))
-        if (dir !== null) return { cwd: dir, preset }
+        if (dir !== null) return { cwd: dir, preset, preset_source: source }
       } catch {
         // fall through to persistence
       }
     }
-    return { cwd: absoluteOrNull(persistenceHeader(ctx, sessionId)?.cwd), preset }
+    return { cwd: absoluteOrNull(persistenceHeader(ctx, sessionId)?.cwd), preset, preset_source: source }
   }
 }
 
-function presetOf(ctx: any, session: any): string | null {
+function presetOf(ctx: any, session: any, sessionId: string): { preset: string | null; source: PresetSource } {
+  const claims: { preset: string; source: PresetSource }[] = []
   const registry = ctx?.get?.('agentPresets') ?? ctx?.agentPresets
   try {
     const recorded = registry?.presetForSession?.(session)
-    if (typeof recorded === 'string' && recorded.length > 0) return recorded
+    if (typeof recorded === 'string' && recorded.length > 0) claims.push({ preset: recorded, source: 'registry' })
   } catch {
-    // fall through to the header
+    // a throwing registry is only one source of truth, not the end of the road
   }
-  return stringOrNull(session?.header?.agentPreset)
+  const header = stringOrNull(session?.header?.agentPreset)
+  if (header !== null) claims.push({ preset: header, source: 'header' })
+  const persisted = stringOrNull(persistenceHeader(ctx, sessionId)?.agentPreset)
+  if (persisted !== null) claims.push({ preset: persisted, source: 'persistence' })
+  const rowPreset = persistedRowsPreset(sessionId)
+  if (rowPreset !== null) claims.push({ preset: rowPreset, source: 'persisted-rows' })
+  if (claims.length === 0) return { preset: null, source: 'none' }
+  // The live projection can lag behind a preset the user just switched to, while
+  // the persisted row already records it. A `prism` claim is the narrower claim
+  // and the surface it unlocks is read-only, so it wins over a lagging default.
+  const prism = claims.find((claim) => claim.preset === PRISM_PRESET)
+  if (prism !== undefined) return { preset: prism.preset, source: prism.source }
+  return { preset: claims[0]!.preset, source: claims[0]!.source }
 }
 
 function persistenceHeader(ctx: any, sessionId: string): { cwd?: unknown; agentPreset?: unknown } | null {
@@ -239,11 +300,72 @@ function stringOrNull(value: unknown): string | null {
 export const name = 'prism-web'
 export const inject = ['webServer']
 
+/** Compact JSON preview so a diagnostic can never return an unbounded body. */
+function preview(value: unknown, limit = 1200): unknown {
+  if (value === undefined) return undefined
+  try {
+    const text = JSON.stringify(value)
+    if (text === undefined) return String(value)
+    if (text.length <= limit) return JSON.parse(text) as unknown
+    return { truncated: true, length: text.length, head: text.slice(0, limit) }
+  } catch {
+    return '[unserializable]'
+  }
+}
+
+/**
+ * Build the diagnostic used by `?probe=1`. It exists because a session's preset
+ * has several possible sources (live projection, header, durable snapshot) and
+ * they can disagree; guessing between them silently broke the panel once.
+ */
+function createProber(ctx: any) {
+  return async (sessionId: string): Promise<unknown> => {
+    const sessions = ctx?.get?.('sessions') ?? ctx?.sessions
+    let session: any
+    let sessionError: string | null = null
+    try {
+      session = sessions?.get?.(sessionId)
+    } catch (error) {
+      sessionError = (error as Error).message
+    }
+    const registry = ctx?.get?.('agentPresets') ?? ctx?.agentPresets
+    let registryPreset: unknown = null
+    let registryError: string | null = null
+    try {
+      registryPreset = registry?.presetForSession?.(session)
+    } catch (error) {
+      registryError = (error as Error).message
+    }
+    const persistence = ctx?.get?.('sessionPersistence') ?? ctx?.sessionPersistence
+    let snapshot: unknown
+    let snapshotError: string | null = null
+    try {
+      snapshot = await Promise.resolve(persistence?.stat?.(sessionId))
+    } catch (error) {
+      snapshotError = (error as Error).message
+    }
+    const snap = snapshot !== null && typeof snapshot === 'object' ? (snapshot as Record<string, unknown>) : null
+    return {
+      hasSession: session !== undefined && session !== null,
+      sessionError,
+      sessionKeys: session !== null && typeof session === 'object' ? Object.keys(session) : [],
+      header: preview(session?.header),
+      registryPreset,
+      registryError,
+      hasSnapshot: snap !== null,
+      snapshotError,
+      snapshotKeys: snap === null ? [] : Object.keys(snap),
+      snapshotHeader: preview(snap?.header),
+      snapshotBody: preview(snap === null ? undefined : { ...snap, header: undefined })
+    }
+  }
+}
+
 /** Register the read-only view route on the host web server. */
 export function apply(ctx: any): void {
   const webServer = ctx?.webServer
   if (webServer === undefined || typeof webServer.register !== 'function') return
-  const handle = createViewHandler(createSessionResolver(ctx))
+  const handle = createViewHandler(createSessionResolver(ctx), createProber(ctx))
   const route = { kind: 'exact', path: ROUTE_PATH, handler: handle }
   if (typeof ctx.effect === 'function') {
     ctx.effect(() => webServer.register(route), 'prism: read-only view routes')

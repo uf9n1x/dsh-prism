@@ -219,7 +219,7 @@ describe('P8 view route wiring', () => {
         return undefined
       }
     }
-    expect(createSessionResolver(ctx)('s1')).toEqual({ cwd: 'C:\\work\\acme', preset: 'prism' })
+    expect(createSessionResolver(ctx)('s1')).toEqual({ cwd: 'C:\\work\\acme', preset: 'prism', preset_source: 'registry' })
   })
 
   it('falls back to workingDirectory, and to the header preset, when no registry answers', () => {
@@ -231,12 +231,42 @@ describe('P8 view route wiring', () => {
         return undefined
       }
     }
-    expect(createSessionResolver(ctx)('s1')).toEqual({ cwd: '/srv/acme', preset: 'standard' })
+    expect(createSessionResolver(ctx)('s1')).toEqual({ cwd: '/srv/acme', preset: 'standard', preset_source: 'header' })
   })
 
   it('returns nulls for an unknown session instead of guessing a directory', () => {
     const ctx = { get: () => undefined }
-    expect(createSessionResolver(ctx)('nope')).toEqual({ cwd: null, preset: null })
+    expect(createSessionResolver(ctx)('nope')).toEqual({ cwd: null, preset: null, preset_source: 'none' })
+  })
+
+  it('believes a persisted prism selection even when the live projection still says standard', () => {
+    // Observed on a real host: the user switches to the Prism preset, the row is
+    // written to disk, but presetForSession() keeps reporting the previous
+    // default until the projection catches up. Trusting only the registry left a
+    // real Prism session with no panel at all.
+    const session = { header: { cwd: '/srv/acme' } }
+    const ctx = {
+      get(name: string) {
+        if (name === 'sessions') return { get: () => session }
+        if (name === 'agentPresets') return { presetForSession: () => 'standard' }
+        if (name === 'sessionPersistence') return { stat: () => ({ header: { cwd: '/srv/acme', agentPreset: 'prism' } }) }
+        return undefined
+      }
+    }
+    expect(createSessionResolver(ctx)('s1')).toEqual({ cwd: '/srv/acme', preset: 'prism', preset_source: 'persistence' })
+  })
+
+  it('keeps a genuine standard session standard when every source agrees', () => {
+    const session = { header: { cwd: '/srv/code', agentPreset: 'standard' } }
+    const ctx = {
+      get(name: string) {
+        if (name === 'sessions') return { get: () => session }
+        if (name === 'agentPresets') return { presetForSession: () => 'standard' }
+        if (name === 'sessionPersistence') return { stat: () => ({ header: { agentPreset: 'standard' } }) }
+        return undefined
+      }
+    }
+    expect(createSessionResolver(ctx)('s1')).toMatchObject({ preset: 'standard', preset_source: 'registry' })
   })
 
   it('gives a non-Prism session no data even when the directory holds a .prism', async () => {

@@ -13,9 +13,10 @@ import { EventRuntime } from '../runtime/fastpath.js'
 import { reconcile, type RecoveryReport } from '../runtime/recover.js'
 import { buildBoard, buildReport, buildEvidence, buildWorkers, type BoardView } from '../projection/readmodel.js'
 import { wrapUntrusted, oneLine, redactSecrets } from '../projection/untrusted.js'
-import { classifyCommand, type ExecutionBackend } from '../exec/backend.js'
+import { classifyCommand, type ExecutionBackend, type HealthStatus } from '../exec/backend.js'
 import { LocalBackend } from '../exec/local.js'
-import { KaliBackend, type KaliConfig } from '../exec/kali.js'
+import { createKaliBackend } from '../exec/ssh.js'
+import type { KaliConfig } from '../exec/kali.js'
 import { Watchdog } from '../runtime/watchdog.js'
 import type { Intent } from '../graph/types.js'
 import type { Assignment, Effect, ExecutionRecord, ReportKind } from '../domain/index.js'
@@ -86,7 +87,7 @@ export class PrismRuntime {
     this.wake = options.wake
     this.approval = options.approval ?? denyAllApprovals
     this.local = options.local ?? new LocalBackend()
-    this.kali = options.kali ?? new KaliBackend(options.kaliConfig ?? {})
+    this.kali = options.kali ?? createKaliBackend(options.kaliConfig ?? {})
     this.commanderSession = options.commanderSession
     this.outbox.register('wake-commander', async (effect) => {
       const text = typeof effect.payload.nudge === 'string' ? effect.payload.nudge : 'prism: state changed'
@@ -138,6 +139,16 @@ export class PrismRuntime {
 
   async recovery(): Promise<RecoveryReport> {
     return this.ensure()
+  }
+
+  /**
+   * Report what this engagement can actually reach. The kali entry is the live
+   * health check, not a claim: an unconfigured or unreachable target shows up as
+   * ok:false / verified:false with ssh's own diagnostic.
+   */
+  async health(): Promise<{ local: HealthStatus; kali: HealthStatus }> {
+    const [local, kali] = await Promise.all([this.local.healthCheck(), this.kali.healthCheck()])
+    return { local, kali }
   }
 
   // -- commander control ---------------------------------------------------

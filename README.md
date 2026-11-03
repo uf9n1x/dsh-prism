@@ -11,15 +11,15 @@ Prism 是 DSH Desktop 的一个**自包含 bundle**：注册 **「Prism 渗透�
 
 | 项 | 状态 |
 |---|---|
-| 源码 + 测试 | ✅ `src/` **32** 个 TS 文件 + `client/` 纯 JS bundle；`tests/` **20 文件 / 142 项全绿** |
+| 源码 + 测试 | ✅ `src/` **34** 个 TS 文件 + `client/` 纯 JS bundle；`tests/` **23 文件 / 171 项全绿** |
 | 构建 | ✅ `npx tsc -p tsconfig.json` → exit 0，产出 `lib/` |
 | 真实安装 | ✅ 独立 profile 上 `dsh plugin add` 成功，页面出现「Prism 渗透模式」 |
 | 真实卸载 | ✅ `plugin remove` 后 bundle 清单与配置零 Prism 行 |
-| 五视图 UI | ✅ 已实现（会话头部入口 → 面板五 tab）；🟡 面板像素未截（见 §8 第 1 条） |
-| `application: applied` | ⚠️ **未取得**（CLI 安装语义为 restart-required，见 §8 第 2 条） |
-| Kali 真实联通 | ⚠️ **未验证**（标 `unverified`，见 §8 第 3 条） |
+| 运行态热应用 | ✅ 运行中宿主 `installBundle` / `removeBundle` 均返回 `application: "applied"` |
+| 五视图 UI | ✅ 会话头部入口 → 面板五 tab，五个页签均已截图（`docs/evidence/shots/`） |
+| Kali 远程执行 | ✅ SSH transport 已实现并在真实主机往返验证（该机为 Ubuntu，非 Kali 镜像） |
 
-完整逐项状态见 `docs/ACCEPTANCE.md`（16 ✅ / 4 🟡 / 0 ⬜）。
+完整逐项状态见 `docs/ACCEPTANCE.md`（20 ✅ / 1 🟡 / 0 ⬜）。
 
 ---
 
@@ -65,9 +65,20 @@ CLI 会自动把声明了 `dsh.bundle` 的包追加到 `dsh.profile.bundles`，*
 <dsh-install>\resources\runtime\cli\bin\dsh.cmd
 ```
 
-### 3.2 在运行中的 Desktop 里安装（未取得 `applied`）
+### 3.2 在运行中的 Desktop 里安装（已实测 `applied`）
 
-若 Desktop 正在运行，应通过 `plugin_manager install_bundle` 传**绝对路径**安装，它会返回实时 HMR 结果（期望 `application: applied`）。本仓库**尚未**在运行态复验这一项（见 §8）。
+若 Desktop 正在运行，通过「插件」面板（背后是 `pluginManager/installBundle`）传**绝对路径**安装，
+它会返回实时 HMR 结果。实测输出（`docs/evidence/p9-applied.md`）：
+
+```json
+{"stage":"enable","target":"dsh-prism","enabled":true,"changed":true,
+ "application":"applied","packageResult":{"exitCode":0,"output":"… Done in 589ms using pnpm v11.28.5"}}
+```
+
+注意两个真实行为：
+- 已经装着的包再 `installBundle` 会返回 `application:"failed"` + `error.code:"already-installed"`
+  ——覆盖安装要**先 remove 再 install**；
+- 该 RPC 的 `args` 必须是**单个 plain object**（`{spec}` / `{name}`），传数组会被网关拒绝。
 
 ### 3.3 验证安装
 
@@ -177,35 +188,58 @@ prism_verify          # 可选：独立复核
 - **凭据脱敏**：进程输出与投影结果返回前经 `redactSecrets()`。
 - **目标内容是数据不是指令**：注入给 worker/指挥官时用 `<<UNTRUSTED_DATA>> ... <<END_UNTRUSTED_DATA>>` 包裹，并转义伪造的闭合标记、剥离控制字符与 bidi 覆盖、HTML 转义。
 
-### Kali（可选，当前 `unverified`）
-未配置 Kali 完全不影响本机模式与启动。配置了但无 transport、或 transport 抛错，`healthCheck()` 一律返回 `verified: false` 且 `start()` 抛错——**绝不返回模拟成功**。
+### Kali / 远程执行（可选，默认关闭）
 
-```ts
-// 接线点：src/exec/kali.ts 的 KaliTransport
-new KaliBackend({ transport: 'ssh' | 'mcp', host, port, auth })
+未配置远程完全不影响本机模式与启动。配置了但连不上，`healthCheck()` 返回 `verified: false`
+并带上 ssh 自己的诊断，`start()` 出来的 handle 在 `output()` 里落 `status:"failed"`——
+**绝不返回模拟成功**。
+
+远程通道用**系统 OpenSSH 客户端**（`src/exec/ssh.ts`，零运行时依赖）：
+
+- `BatchMode=yes`（不弹密码）、`StrictHostKeyChecking=yes`（仅 lab VM 可显式关）；
+- 目的地与命令是两个独立 argv，`--` 结束选项解析，host/user 过白名单正则 —— 主机名无法变成 ssh 选项；
+- 超时 `SIGKILL`，退出码记 `null`；`stop()` 只标状态，不 kill 远端进程（已知边界）。
+
+配置写在 preset 行的 `config.kali`（`src/host/config.ts` 防御式解析，缺 `host` 即不启用）：
+
+```yaml
+- id: prism-worker          # commander 行（presets/prism.patch.yml）同形
+  name: 'dsh-prism/worker'
+  config:
+    kali:
+      host: 192.0.2.10
+      user: user
+      identityFile: C:/Users/you/.ssh/id_ed25519   # 密钥路径，不是密钥内容
+      connectTimeoutSec: 8                         # 1–600
+      strictHostKeyChecking: false                 # 仅 lab VM
 ```
-真实的 MCP/SSH transport 本仓库**未提供实现**，需自行注入。
+
+真实往返证据见 `docs/evidence/p7-kali.md`（`verified:true`、`nmap` 真输出、`exit=127`、不可达 `exit=255`）。
+⚠️ 验证主机是 **Ubuntu 22.04**，不是 Kali 镜像；`identityRef` → 密钥路径仍未接 `ctx.credentials`。
 
 ---
 
 ## 8. 未实现 / 未验证清单
 
-> 按诚实原则，以下项**没有被写成已完成**。
+> 按诚实原则，以下项**没有被写成已完成**。已经闭环的项从本清单移除，但证据留在
+> `docs/evidence/`：面板像素（`p8-ui.md` §8）、`application: applied` 与覆盖安装（`p9-applied.md`）、
+> SSH 真实联通（`p7-kali.md`）都已销项。
 
-1. **🟡 五视图面板的页面渲染没有截图。** 机制已全部在真实宿主上验证（六视图返回真实投影、
-   客户端 bundle 进 `__DSH_BOOT__` 并下发、console 零错误、普通会话零 UI），但「点开面板看到五个 tab」
-   这一步没做：Prism 入口只对**已选中的 prism 会话**渲染，而侧边栏不列「没有任何 prompt 的空白会话」，
-   要让它出现需要发一条真实消息（一次模型调用）。见 `docs/evidence/p8-ui.md` §8。
-2. **⚠️ `application: applied` 未取得**。该项由 `plugin_manager` 工具的实时 HMR 返回；本次通过 `dsh plugin add` 在**未运行**的 profile 上安装，只可能得到 restart-required 语义。需在运行中的 Desktop 上复验。
-3. **⚠️ Kali 真实联通未验证**。仅有契约测试（5 项）与 `verified:false` 行为保证。
-4. **⚠️ 真实模型驱动的子代理派单未跑通**。`dispatch → startActivation → worker 执行 → subagent/end → 唤醒` 的完整跨进程链路需要 LLM 凭证与运行态会话；当前在 `NativeOps` 注入层（stub）上证明。
-5. **⚠️ `ctx.credentials` 引用式取凭据未接入**。当前靠输出脱敏 + 不落盘兜底，尚无语义化的凭据引用。
-6. **⚠️ 升级路径未实测**（旧 bundle → 新 bundle 覆盖安装）。
-7. **⚠️ Linux / macOS 执行后端未实测**（仅 Windows 路径验证）。
-8. **⚠️ Watchdog 无自动触发源**。`src/runtime/watchdog.ts` 的四操作与准入检查已实现并测试，但"谁在何时调用 `scan()`"尚未接入事件流——需外部调度或后续阶段补齐。
-9. **⚠️ 护栏阈值未独立成模块**。原计划的 `runtime/guardrails.ts`（maxAutoTurns=40 / cooldown / human-reset）未拆出；轮询抑制由 fast path 的设计本身保证（无定时器），但自动轮次上限未实现。
-10. **⚠️ 五视图的数据通道不是 `@Remote`**。用的是同源只读 HTTP 路由，因为 typert codegen 只在 DSH monorepo 的 `build:lib` 里。视图契约（六个 payload 形状）独立于通道，将来可平移到 `@Remote`（D22）。
-11. **⚠️ 客户端 bundle 为手写纯 JS，无类型检查**。它有 8 项契约测试（注册项/顺序/空态返回 null/不注册 `conversation.view`/相对路径/不碰 DOM），但没有 TS 类型约束。
+1. **⚠️ 真实模型驱动的子代理派单未跑通**。`dispatch → startActivation → worker 执行 → subagent/end → 唤醒`
+   的完整跨进程链路需要 LLM 凭证与运行态会话；当前在 `NativeOps` 注入层（stub）上证明。
+   面板里那份 engagement 是 `PrismEngine` 播种的**真实 `.prism/` 内容**，但**不是模型跑出来的**
+   （`docs/evidence/p8-ui.md` §8 写明了这条边界）。
+2. **⚠️ `ctx.credentials` 引用式取凭据未接入**。当前靠输出脱敏 + 不落盘兜底；
+   `kali.identityFile` 要用户自己填密钥**路径**，没有走宿主的凭据服务。
+3. **⚠️ Kali 镜像本体未实测**。SSH 通道已在 Ubuntu 22.04 真机上验证（D23），
+   但目标机是不是 Kali 未测；Kali 工具链（如 `msfconsole`）的可用性未验证。
+4. **⚠️ Linux / macOS 本机执行后端未实测**（仅 Windows 路径验证）。
+5. **⚠️ Watchdog 无自动触发源**。`src/runtime/watchdog.ts` 的四操作与准入检查已实现并测试，但"谁在何时调用 `scan()`"尚未接入事件流。
+6. **⚠️ 护栏阈值未独立成模块**。原计划的 `runtime/guardrails.ts`（maxAutoTurns=40 / cooldown / human-reset）未拆出；轮询抑制由 fast path 的设计本身保证（无定时器），但自动轮次上限未实现。
+7. **⚠️ 五视图的数据通道不是 `@Remote`**。用的是同源只读 HTTP 路由（typert codegen 只在 DSH monorepo 的 `build:lib` 里）。视图契约独立于通道，将来可平移（D22）。
+8. **⚠️ 客户端 bundle 为手写纯 JS，无类型检查**。有 8 项契约测试，但没有 TS 类型约束。
+9. **⚠️ `config.kali` 必须写在 preset patch 行里**，等于复制一份 bundle 改配置；尚未做成用户级设置项。
+10. **⚠️ 覆盖安装只测了「同路径 remove + install」**，没有构造跨版本 diff 的升级场景。
 
 ---
 
@@ -236,7 +270,7 @@ new KaliBackend({ transport: 'ssh' | 'mcp', host, port, auth })
 ```bash
 npx tsc -p tsconfig.json --noEmit    # 类型检查
 npx tsc -p tsconfig.json             # 构建 lib/
-npx vitest run                       # 全量：20 files / 142 tests
+npx vitest run                       # 全量：23 files / 171 tests
 npx vitest run tests/host            # 单目录
 ```
 
@@ -250,7 +284,7 @@ npx vitest run tests/host            # 单目录
 |---|---|
 | `docs/SPEC.md` | 单一事实源（产品边界 / 领域模型 / 验收） |
 | `docs/ARCHITECTURE.md` | 实际模块布局、数据模型、运行时、执行后端、投影 |
-| `docs/DECISIONS.md` | ADR D1–D21（含 D16 零依赖、D17 预设走 patch 行、D20 UI 未交付、D21 安装证据口径） |
+| `docs/DECISIONS.md` | ADR D1–D24（含 D16 零依赖、D17 预设走 patch 行、D20→D22 UI 落地、D21→D23 `applied` 销项、D23 SSH transport、D24 模板变量封闭集） |
 | `docs/PLAN.md` | P0–P9 计划 + **实际落地对照**（逐条标注偏离） |
 | `docs/ACCEPTANCE.md` | A1–A12 / N1–N9 逐项状态与证据映射 |
 | `docs/STATUS.md` | 活状态板（接手先读） |

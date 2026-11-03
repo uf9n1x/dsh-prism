@@ -16,6 +16,11 @@ export interface KaliConfig {
   /** Credential reference resolved by the DSH credentials service — never a secret value. */
   identityRef?: string
   enabled?: boolean
+  /** Private key path, already resolved from identityRef. Never the key itself. */
+  identityFile?: string
+  /** Only `false` for lab VMs with rotated host keys; the default keeps the MITM check. */
+  strictHostKeyChecking?: boolean
+  connectTimeoutSec?: number
 }
 
 export class KaliBackend implements ExecutionBackend {
@@ -51,8 +56,11 @@ export class KaliBackend implements ExecutionBackend {
       return {
         backend: 'kali',
         ok,
-        verified: true,
-        detail: ok ? probe.stdout.trim().slice(0, 200) : `remote command exited ${String(probe.code)}`
+        // `verified` means a real round trip succeeded. A connection that is
+        // attempted but fails (255, timeout, no binary) leaves this false: the
+        // backend is still unproven, even though we now know more about why.
+        verified: ok,
+        detail: ok ? probe.stdout.trim().slice(0, 200) : `remote command exited ${String(probe.code)}: ${probe.stderr.trim().slice(0, 160)}`
       }
     } catch (err) {
       return { backend: 'kali', ok: false, verified: false, detail: `connection failed: ${(err as Error).message}` }
