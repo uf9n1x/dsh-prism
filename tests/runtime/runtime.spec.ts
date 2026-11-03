@@ -196,3 +196,28 @@ describe('P5 restricted watchdog', () => {
     expect((await engine.getEffect(fx.id)).status).toBe('unknown')
   })
 })
+
+describe('T2 watchdog scope + no-progress grace', () => {
+  it('the watchdog instance has no runtime method that changes authority (mandate/prompt/tool)', () => {
+    const dog = new Watchdog(engine, { stallMs: 60_000, maxActive: 4 })
+    for (const method of ['createMandate', 'widenMandate', 'setPrompt', 'registerTool', 'setAssignmentStatus']) {
+      expect(typeof (dog as any)[method], `watchdog must not expose ${method}`).toBe('undefined')
+    }
+  })
+
+  it('does not flag a freshly spawned assignment as no-progress under the default stall window', async () => {
+    const assignment = await assignmentWithMandate()
+    await engine.setAssignmentStatus(assignment.id, 'running')
+    const dog = new Watchdog(engine, { stallMs: 180_000, maxActive: 10 })
+    const findings = await dog.scan()
+    expect(findings.some((f) => f.assignment_id === assignment.id)).toBe(false)
+  })
+
+  it('still flags it once the stall window has elapsed', async () => {
+    const assignment = await assignmentWithMandate()
+    await engine.setAssignmentStatus(assignment.id, 'running')
+    const dog = new Watchdog(engine, { stallMs: 0, maxActive: 10 })
+    const findings = await dog.scan()
+    expect(findings.some((f) => f.assignment_id === assignment.id)).toBe(true)
+  })
+})
