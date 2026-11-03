@@ -11,7 +11,7 @@ Prism 是 DSH Desktop 的一个**自包含 bundle**：注册 **「Prism 渗透�
 
 | 项 | 状态 |
 |---|---|
-| 源码 + 测试 | ✅ `src/` **35** 个 TS 文件 + `client/` 纯 JS bundle；`tests/` **24 文件 / 222 项全绿** |
+| 源码 + 测试 | ✅ `src/` **37** 个 TS 文件 + `client/` 纯 JS bundle；`tests/` **26 文件 / 245 项全绿** |
 | 构建 | ✅ `npx tsc -p tsconfig.json` → exit 0，产出 `lib/` |
 | 真实安装 | ✅ 独立 profile 上 `dsh plugin add` 成功，页面出现「Prism 渗透模式」 |
 | 真实卸载 | ✅ `plugin remove` 后 bundle 清单与配置零 Prism 行 |
@@ -21,72 +21,74 @@ Prism 是 DSH Desktop 的一个**自包含 bundle**：注册 **「Prism 渗透�
 | 真实靶场全流程 | ✅ 模型驱动、跨进程、经 SSH 在 VM 内对 docker DVWA 靶场跑通（`docs/evidence/lab-run.md`） |
 | 授权模型 | ✅ 常驻预授权（默认不弹审批），范围检查不变；`config.preAuthorized: false` 可回退交互审批（D28） |
 
-完整逐项状态见 `docs/ACCEPTANCE.md`（20 ✅ / 1 🟡 / 0 ⬜）。
+完整逐项状态见 `docs/ACCEPTANCE.md`（23 ✅ / 0 🟡 / 0 ⬜）。
 
 ---
 
 ## 2. 环境要求
 
 - **DSH Desktop `0.2.1-rc.5`** 或更高的兼容版本。
-- **Node ≥ 20**。注意：本项目测试用 `vitest@4`，在 **Node 21 上启动即崩**（`util.styleText` 不接受数组参数）；开发/测试请用 Node 22 或 24（可用 DSH 自带 bundled Node 24.21.0）。
+- **Node ≥ 20**（仅**构建 / 测试**需要；安装与运行本身由 DSH 宿主提供运行时，不要求你手动配置 Node）。注意：本项目测试用 `vitest@4`，在 **Node 21 上启动即崩**（`util.styleText` 不接受数组参数）；开发/测试请用 Node 22 或 24（可用 DSH 自带 bundled Node 24.21.0）。
 - pnpm ≥ 9（`dsh plugin add` 内部使用 pnpm；本次验证环境为 pnpm 11.28.5）。
 - Windows 为本机执行的默认与已验证平台（`cmd.exe` + `taskkill`）。Linux/macOS 的执行后端代码路径存在但**未实测**。
 
 ---
 
-## 3. 安装
+## 3. 安装（与其它插件同一套方式）
 
-### 3.1 从本地目录安装（开发态，已实测）
+> 本插件以**本地 bundle** 交付（`0.1.0`，未发布到 npm / 市场）。安装方式与其它插件完全一样——
+> 走 DSH 的「插件面板」或 `dsh plugin`，只是“来源”填本目录的**绝对路径**。装好后**不需要手改任何配置**。
+> 本机安装目录示例：`<path-to-dsh-prism>`。
 
+安装前只需确认一次：`lib/` 已构建好（仓库/本目录已带）。**只有你改过 `src/`** 才需要重建：
 ```bash
-# 先确保有构建产物（dsh 加载的是 lib/*.js，不是 src/）
-cd /path/to/dsh-prism
 npx tsc -p tsconfig.json
-
-# 安装到某个 profile（建议先建独立 profile 验证，不要直接动日常 profile）
-dsh plugin --profile prismverify add /绝对路径/dsh-prism
 ```
 
-实测输出：
-```text
-$ dsh plugin --profile prismweb add <path-to-dsh-prism>
-dependencies:
-+ dsh-prism 0.1.0 <- <path-to-dsh-prism>
-Done in 648ms using pnpm v11.28.5
-```
+> 提示：若「插件面板」的安装输入框只接受**市场包名**，本插件是本地目录，直接用 §3.2 的 CLI 一条命令
+> 安装即可——它和面板背后是同一套 `pluginManager`，只是“来源”不同。
 
-CLI 会自动把声明了 `dsh.bundle` 的包追加到 `dsh.profile.bundles`，**不需要手改配置**：
-```json
-{ "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-prism"] } } }
-```
+### 3.1 图形界面安装（推荐：与其它插件一致，运行中热应用、不用重启）
 
-### 3.1.1 真实 CLI 位置（不在 PATH 上）
+1. 打开 DSH Desktop →「插件」面板 →「安装 / 添加 bundle」；
+2. 来源填本插件目录的**绝对路径**，例如 `<path-to-dsh-prism>`；
+3. 等待返回 `application: "applied"` 即完成（与装其它插件一样，直接生效）。
+   验收：新建任务时，左下角预设选择器出现 **「Prism 渗透模式」**。
 
-本机安装目录下的启动器：
-```text
-<dsh-install>\resources\runtime\cli\bin\dsh.cmd
-```
-
-### 3.2 在运行中的 Desktop 里安装（已实测 `applied`）
-
-若 Desktop 正在运行，通过「插件」面板（背后是 `pluginManager/installBundle`）传**绝对路径**安装，
-它会返回实时 HMR 结果。实测输出（`docs/evidence/p9-applied.md`）：
-
+运行中热应用的实测返回见 `docs/evidence/p9-applied.md`：
 ```json
 {"stage":"enable","target":"dsh-prism","enabled":true,"changed":true,
  "application":"applied","packageResult":{"exitCode":0,"output":"… Done in 589ms using pnpm v11.28.5"}}
 ```
+> 两个真实行为：① 已装着的包再装会返回 `already-installed`，**覆盖安装要先卸载再装**；
+> ② 插件面板背后 RPC 的 `args` 必须是**单个 plain object**（`{spec}` / `{name}`），传数组会被网关拒绝。
 
-注意两个真实行为：
-- 已经装着的包再 `installBundle` 会返回 `application:"failed"` + `error.code:"already-installed"`
-  ——覆盖安装要**先 remove 再 install**；
-- 该 RPC 的 `args` 必须是**单个 plain object**（`{spec}` / `{name}`），传数组会被网关拒绝。
+### 3.2 命令行安装（等价）
+
+```bash
+# 装到你日常使用的 profile（默认名为 desktop；也可先建独立 profile 验证）
+dsh plugin --profile desktop add "<path-to-dsh-prism>"
+```
+实测输出：
+```text
+dependencies:
++ dsh-prism 0.1.0 <- <path-to-dsh-prism>
+Done in … using pnpm v11.28.5
+```
+CLI 会自动把声明了 `dsh.bundle` 的包加入 `dsh.profile.bundles`，**不需要手改配置**：
+```json
+{ "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-prism"] } } }
+```
+
+> - 若 `dsh` 不在 PATH，用本机启动器：`<dsh-install>\resources\runtime\cli\bin\dsh.cmd`。
+> - 用 CLI 对**未运行**的 profile 安装后，需**启动/重启**该 profile 的宿主才会加载；用**插件面板**对
+>   运行中的宿主安装则**即时热应用**（无需重启）。
 
 ### 3.3 验证安装
 
 ```bash
 # 组合配置里应出现三行：prism-host / preset-prism / preset-prism-worker
-dsh --profile prismverify --dump-config | grep -A3 prism
+dsh --profile desktop --dump-config | Select-String -Pattern 'prism-host|preset-prism|Prism 渗透'
 ```
 ```text
 - id: prism-host
@@ -100,25 +102,20 @@ dsh --profile prismverify --dump-config | grep -A3 prism
     id: prism-worker
 ```
 
-启动后新建任务时，左下角预设选择器应出现 **「Prism 渗透模式」**：
-```bash
-dsh --profile prismverify --no-open
-```
+启动后在**新建任务**的左下角预设选择器应出现 **「Prism 渗透模式」**（与选其它预设一样）。
 
-UI 侧还要确认两件事（`docs/evidence/p8-ui.md` 有实测输出）：
-1. 页面 HTML 的 `__DSH_BOOT__` 里有
-   `{"id":"dsh-prism","url":"plugins/??dsh-prism/client.js&rev=…","immediately":true}`；
-2. 浏览器 console 没有 `slot entry crashed`。
-
-> ⚠️ **headless 模板 profile 的已知差异**：headless 没有 `agentPresets` 服务，会出现
-> `preset-prism ... pending (waiting for service: agentPresets)`。这是正常现象——请用含该服务的 web/desktop profile 验证。
+> ⚠️ **headless 模板 profile 的已知差异**：headless 没有 `agentPresets` / `webServer` 服务，会出现
+> `preset-prism ... pending (waiting for service: agentPresets)`。这是正常现象——请用含这些服务的
+> **web / desktop profile**（也就是你正常用的客户端）。
 
 ---
 
 ## 4. 卸载
 
+图形界面：DSH Desktop →「插件」面板 → 找到 `dsh-prism` → 卸载（运行中宿主会热应用）。命令行等价：
+
 ```bash
-dsh plugin --profile prismverify remove dsh-prism
+dsh plugin --profile desktop remove dsh-prism
 ```
 ```text
 dependencies:
@@ -142,11 +139,34 @@ Done in 610ms using pnpm v11.28.5
 - **图谱**：同层 SVG，事实 / 意图 / 派单三列顶部对齐；边为贝塞尔曲线（结果边虚线）；
   节点可点选、可键盘聚焦，悬停高亮相邻节点。
 - **已知代价**：该 slot 的注册项只有 `id/order/label`，**无法按会话隐藏**，
-  所以非 Prism 会话也会看到这个页签，点开是一句空态说明（README §8 第 11 条）。
+  所以非 Prism 会话也会看到这个页签，点开是一句空态说明（README §8 第 10 条）。
 - 数据来自 `GET /prism/view?view=<name>&session=<id>`（同源只读，见 `src/host/webrow.ts`）；
   该路由**只接受 session id，不接受任何路径参数**。
 
-## 5. 使用：两种角色，两套工具面
+## 5. 使用：装好后怎么打
+
+### 5.1 快速上手（5 分钟，渗透 / CTF）
+
+前提：只用**本机**做执行即可，**不需要 Docker / Kali**（本机模式默认开启；要连远程再配 §7 的 Kali）。
+
+1. **新建任务**，左下角预设选 **「Prism 渗透模式」**。
+2. **一句话把 目标 + 授权 + 想到哪一步 说清楚**，例如：
+   - CTF 靶机：`我获授权测试 CTF 靶机 192.0.2.20（http://192.0.2.20/），先做端口与服务侦察，再找可利用点。`
+   - 本机靶场：`对本地 DVWA 192.0.2.10:8080 做授权测试，admin/password 已知，先侦察再尝试登录。`
+3. 指挥官会自动 `prism_init`（把 **目标 / 动作 / 强度** 写进不可变 Mandate）→ `prism_reason` 出待办 →
+   `prism_spawn` 派工兵；工兵用 `prism_exec_start/output/stop` 真跑命令，再用 `prism_worker_report` 回报。
+4. 点开会话页签 **「Prism」** 看 图谱 / 前沿 / 工兵 / 证据 / 报告。任务在后台自动推进，你可以继续在
+   对话里发指令（纠偏 / 暂停 / 换方向），都会作为事件继续处理。
+
+> **授权级别（最关键）**：默认 `strength: read`，只够侦察。要做**写入 / 漏洞利用 / 拿 shell**，就在开头
+> 明确说“**允许 exploit / 写入**”，指挥官初始化 Mandate 时会带上相应 `actions` 与 `strength`（`write` / `exploit`）。
+> 范围建好后**只能收紧、不能放宽**；没授权到的目标 / 动作会被**执行前拒绝**（D29）。本插件默认**常驻预授权、
+> 不弹审批**（D28）；想恢复人工确认，把 preset 行的 `config.preAuthorized` 设为 `false`。
+
+> **断点续跑**：关掉再开也不丢——状态都在 `<工作目录>/.prism/`；重开后指挥官读 `prism_board` 续跑，中断的
+> 工兵可用 `prism_spawn ... resume_of` 接手。
+
+### 5.2 两种角色，两套工具面
 
 安装带来两个 preset，**工具面互斥**——隔离靠组合而非运行时开关：
 
@@ -157,7 +177,7 @@ Done in 610ms using pnpm v11.28.5
 | **没有** | shell / fs / web / MCP —— 一个执行工具都没有 | ask-user / goal / todo / subagent —— 不能自己派单、不能向用户提问 |
 | 强制 | `tools.guard()` 在执行前二次拦截任何执行类工具 | 无绑定 Assignment 时任何执行直接拒绝 |
 
-### 典型推进流程
+### 5.3 典型推进流程（内部机制，无需手动）
 ```text
 prism_init            # 建立 engagement 并铸造 Mandate（模型无法自己提权；范围写进凭证）
 prism_reason          # 读事实 → 写出候选 Intent
@@ -220,13 +240,15 @@ frontier 重新派单——失败不是结果（D30）。
     kali:
       host: 192.0.2.10
       user: user
-      identityFile: C:/Users/you/.ssh/id_ed25519   # 密钥路径，不是密钥内容
+      identityFile: C:/Users/you/.ssh/id_ed25519   # 方案A：密钥文件路径（不是内容）
+      # identityRef: cred://lab-ssh-key           # 方案B：宿主 ctx.credentials 引用（推荐，不落盘）
       connectTimeoutSec: 8                         # 1–600
       strictHostKeyChecking: false                 # 仅 lab VM
 ```
 
 真实往返证据见 `docs/evidence/p7-kali.md`（`verified:true`、`nmap` 真输出、`exit=127`、不可达 `exit=255`）。
-⚠️ 验证主机是 **Ubuntu 22.04**，不是 Kali 镜像；`identityRef` → 密钥路径仍未接 `ctx.credentials`。
+⚠️ 验证主机是 **Ubuntu 22.04**，不是 Kali 镜像。身份认证两种方式：`identityFile`（你填密钥**路径**）或
+`identityRef`（走宿主 `ctx.credentials` 引用，D35：每次调用解析、临时 0600 密钥、用完即删、解析失败即拒绝连接、绝不回退密码）。
 
 ---
 
@@ -290,7 +312,7 @@ frontier 重新派单——失败不是结果（D30）。
 ```bash
 npx tsc -p tsconfig.json --noEmit    # 类型检查
 npx tsc -p tsconfig.json             # 构建 lib/
-npx vitest run                       # 全量：24 files / 222 tests
+npx vitest run                       # 全量：26 files / 245 tests
 npx vitest run tests/host            # 单目录
 ```
 
@@ -304,9 +326,9 @@ npx vitest run tests/host            # 单目录
 |---|---|
 | `docs/SPEC.md` | 单一事实源（产品边界 / 领域模型 / 验收） |
 | `docs/ARCHITECTURE.md` | 实际模块布局、数据模型、运行时、执行后端、投影 |
-| `docs/DECISIONS.md` | ADR D1–D24（含 D16 零依赖、D17 预设走 patch 行、D20→D22 UI 落地、D21→D23 `applied` 销项、D23 SSH transport、D24 模板变量封闭集） |
+| `docs/DECISIONS.md` | ADR D1–D36（含 D16 零依赖、D17 预设走 patch 行、D20→D22 UI 落地、D21→D23 `applied` 销项、D23 SSH transport、D24 模板变量封闭集、D29–D31 审计轮、D32–D36 续作轮 v3） |
 | `docs/PLAN.md` | P0–P9 计划 + **实际落地对照**（逐条标注偏离） |
-| `docs/ACCEPTANCE.md` | A1–A12 / N1–N9 逐项状态与证据映射 |
+| `docs/ACCEPTANCE.md` | A1–A14 / N1–N9 逐项状态与证据映射 |
 | `docs/STATUS.md` | 活状态板（接手先读） |
 | `docs/DEVLOG.md` | 追加式时间线（含 RED 证据与事故复盘） |
 | `docs/MECHANISMS.md` | 机制说明 |
