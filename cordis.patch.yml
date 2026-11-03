@@ -11,3 +11,10 @@
 - insert:
     - id: prism-host
       name: 'dsh-prism'
+    # Read-only HTTP views of `.prism/` for the web client. Separate row so the
+    # UI degrades to "absent" instead of pending in profiles without a webServer
+    # (headless / ACP): the host row above still activates there.
+    - id: prism-web
+      name: 'dsh-prism/web'
+      inject:
+        - webServer

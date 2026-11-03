@@ -221,9 +221,7 @@ export interface ReportView2 {
   assignments: Record<string, number>
   reports: ReportView[]
   effects: Record<string, number>
-}
-
-/** Engagement report: the numbers a human reads at the end of a run. */
+}/** Engagement report: the numbers a human reads at the end of a run. */
 export async function buildReport(engine: PrismEngine): Promise<ReportView2> {
   if (!(await existsPath(engine.root))) {
     return {
@@ -265,5 +263,78 @@ export async function buildReport(engine: PrismEngine): Promise<ReportView2> {
       facts: r.facts
     })),
     effects: tally(effects.map((e) => e.status))
+  }
+}
+
+export type GraphNodeKind = 'fact' | 'intent' | 'assignment'
+
+export interface GraphNode {
+  id: string
+  kind: GraphNodeKind
+  label: string
+  /** Derived frontier state for intents, assignment status otherwise. */
+  state: string
+}
+
+export interface GraphEdge {
+  from: string
+  to: string
+  kind: 'from' | 'result' | 'claim'
+}
+
+export interface GraphView {
+  present: boolean
+  nodes: GraphNode[]
+  edges: GraphEdge[]
+  counts: Record<GraphNodeKind, number>
+}
+
+/**
+ * Graph view: the fact-intent DAG plus the assignments that claim its intents.
+ * State is derived from structure (`classify`), never read from a mirror field.
+ */
+export async function buildGraph(engine: PrismEngine): Promise<GraphView> {
+  const empty: GraphView = { present: false, nodes: [], edges: [], counts: { fact: 0, intent: 0, assignment: 0 } }
+  if (!(await engine.exists())) return empty
+  const [intents, facts, assignments] = await Promise.all([
+    engine.store.listIntents(),
+    engine.store.listFacts(),
+    engine.listAssignments()
+  ])
+  const frontier = classify(intents, facts)
+  const stateOf = new Map<string, string>()
+  for (const [state, list] of Object.entries(frontier)) {
+    for (const entry of list as { id: string }[]) stateOf.set(entry.id, state)
+  }
+
+  const nodes: GraphNode[] = []
+  const edges: GraphEdge[] = []
+  for (const fact of facts) {
+    nodes.push({ id: fact.id, kind: 'fact', label: oneLine(fact.title, 120), state: 'fact' })
+  }
+  for (const intent of intents) {
+    nodes.push({
+      id: intent.id,
+      kind: 'intent',
+      label: oneLine(intent.description, 120),
+      state: stateOf.get(intent.id) ?? 'unknown'
+    })
+    for (const from of intent.from) edges.push({ from, to: intent.id, kind: 'from' })
+    if (intent.to !== null) edges.push({ from: intent.id, to: intent.to, kind: 'result' })
+  }
+  for (const assignment of assignments) {
+    nodes.push({ id: assignment.id, kind: 'assignment', label: assignment.intent_id, state: assignment.status })
+    edges.push({ from: assignment.intent_id, to: assignment.id, kind: 'claim' })
+  }
+
+  return {
+    present: true,
+    nodes,
+    edges,
+    counts: {
+      fact: nodes.filter((n) => n.kind === 'fact').length,
+      intent: nodes.filter((n) => n.kind === 'intent').length,
+      assignment: nodes.filter((n) => n.kind === 'assignment').length
+    }
   }
 }

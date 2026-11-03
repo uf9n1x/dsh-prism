@@ -47,14 +47,31 @@ describe('bundle manifest', () => {
   it('exposes the subpath entries the presets reference', () => {
     expect(pkg.exports['./commander']).toBe('./lib/host/commander.js')
     expect(pkg.exports['./worker']).toBe('./lib/host/worker.js')
+    expect(pkg.exports['./web']).toBe('./lib/host/webrow.js')
     expect(pkg.exports['.']).toBe('./lib/index.js')
     expect(pkg.exports['./presets/*.patch.yml']).toBeTruthy()
   })
 
-  it('ships no client bundle while the five-view UI is unimplemented', () => {
-    // Honest manifest: a dsh.client declaration without a real client entry
-    // would break the web boot. It is added back when P8 lands.
-    expect(pkg.dsh.client).toBeUndefined()
+  it('declares a web client bundle whose entry exists and whose id matches the package', () => {
+    expect(pkg.dsh.client?.platform).toBe('web')
+    const entry = join(root, pkg.exports['./client'])
+    expect(existsSync(entry), 'missing client entry').toBe(true)
+    const source = readFileSync(entry, 'utf8')
+    expect(source).toContain(`id: '${pkg.name}'`)
+    // The bundle may open with a comment banner; the loader call must still be
+    // the first statement, because the module table evaluates the file as-is.
+    expect(/^window\.__ModuleLoader__\.load\(\{/m.test(source)).toBe(true)
+  })
+
+  it('keeps the web view row separate from the always-on host row', () => {
+    const rows: { id?: string; name?: string; inject?: string[] }[] = []
+    for (const entry of parse(read('cordis.patch.yml')) as { insert?: { id?: string; name?: string }[] }[]) {
+      for (const row of entry.insert ?? []) rows.push(row)
+    }
+    expect(rows.find((row) => row.id === 'prism-host')?.inject).toBeUndefined()
+    const web = rows.find((row) => row.id === 'prism-web')
+    expect(web?.name).toBe('dsh-prism/web')
+    expect(web?.inject).toEqual(['webServer'])
   })
 
   it('keeps the governed docs present (single source of truth)', () => {

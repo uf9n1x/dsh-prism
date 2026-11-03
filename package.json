@@ -9,12 +9,15 @@
     ".": "./lib/index.js",
     "./commander": "./lib/host/commander.js",
     "./worker": "./lib/host/worker.js",
+    "./web": "./lib/host/webrow.js",
+    "./client": "./client/prism-client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./presets/*.patch.yml": "./presets/*.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
     "lib/**/*.js",
+    "client/**/*.js",
     "presets/**",
     "cordis.patch.yml"
   ],
@@ -24,6 +27,13 @@
         "./cordis.patch.yml",
         "./presets/prism.patch.yml",
         "./presets/prism-worker.patch.yml"
+      ]
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
       ]
     }
   },
