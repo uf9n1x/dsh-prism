@@ -5,6 +5,7 @@
 
 export const COMMANDER_TOOL_NAMES = [
   'prism_board',
+  'prism_init',
   'prism_reason',
   'prism_hint',
   'prism_spawn',
@@ -12,10 +13,16 @@ export const COMMANDER_TOOL_NAMES = [
   'prism_msg',
   'prism_kill',
   'prism_verify',
-  'prism_capabilities'
+  'prism_capabilities',
+  'prism_tighten'
 ] as const
 
-export const WORKER_EXEC_TOOLS = ['prism_run', 'prism_read', 'prism_write', 'prism_http'] as const
+export const WORKER_EXEC_TOOLS = [
+  'prism_exec_start',
+  'prism_exec_output',
+  'prism_exec_stop',
+  'prism_run'
+] as const
 
 export const WORKER_TOOL_NAMES = ['prism_worker_report', ...WORKER_EXEC_TOOLS] as const
 
@@ -35,7 +42,10 @@ const NATIVE_EXEC_TOOLS = new Set([
   'grep',
   'web_fetch',
   'web_search',
-  'run_code'
+  'run_code',
+  'subagent',
+  'subagent_fork',
+  'worktree'
 ])
 
 const EXEC_TOOL_SET = new Set<string>([...NATIVE_EXEC_TOOLS, ...WORKER_EXEC_TOOLS])

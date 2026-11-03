@@ -1,19 +1,13 @@
-# Prism bundle patch — Phase 0 SKELETON.
-# Real rows are finalized in P1 (host plugin) and P2 (preset registration).
-# Do NOT install this bundle until P9; installing now would reference packages
-# that are not yet built.
+# Prism bundle patch — the GLOBAL layer.
 #
-# Intended final shape (mirrors dsh-pentest): one self-contained package whose
-# rows all resolve inside the bundle package itself, so it installs from a
-# single directory via plugin_manager install_bundle.
+# One self-contained package: every row below resolves inside this package, so
+# the bundle installs from a single directory. Preset declarations live in
+# `presets/*.patch.yml` (listed in package.json `dsh.bundle.patch`), because a
+# preset is a row whose `plugins` list is the agent composition.
+#
+# What this row does NOT do: register tools. Tool surface belongs to the agent
+# presets, so an ordinary coding/standard/PPT session never sees a prism_* tool.
 
 - insert:
-    # Host plugin: registers prism_* tools, protocol section, subagent provider,
-    # event-driven runtime and Remote read-models. (P1–P8)
     - id: prism-host
       name: 'dsh-prism'
-
-    # Registers the two agent presets: `prism` (commander) and `prism-worker`
-    # (worker). Implemented in P2.
-    - id: prism-preset-root
-      name: 'dsh-prism/preset-root'

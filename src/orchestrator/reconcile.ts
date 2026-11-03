@@ -3,7 +3,7 @@
 // capabilities (e.g. a new MCP server) register host-global tools. On every
 // tools/change we recompute a deny filter that strips execution tools from the
 // commander scope, so a mid-task capability never leaks into the decision agent.
-import { isExecutionTool } from './catalog'
+import { isExecutionTool } from './catalog.js'
 
 export interface ToolRestrictionPlan {
   deny: string[]

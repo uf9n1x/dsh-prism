@@ -2,7 +2,7 @@
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
-import { COUNTER_KINDS, FactSchema, IntentSchema, ProjectSchema, type Fact, type Intent } from './types'
+import { COUNTER_KINDS, FactSchema, IntentSchema, ProjectSchema, type Fact, type Intent } from './types.js'
 
 export interface ValidationReport {
   ok: boolean

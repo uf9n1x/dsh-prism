@@ -39,6 +39,9 @@ export const ProjectSchema = z.object({
   goal: z.string().min(1),
   status: z.enum(['active', 'done']).default('active'),
   counters: z.record(z.string(), z.number().int().nonnegative()).default({}),
+  // Carried on project.json so a `.prism/` directory is self-describing. Kept
+  // optional here: legacy graphs are stamped by `domain/migrate.ts` on open.
+  schema_version: z.number().int().nonnegative().optional(),
   created_at: z.string().min(1),
   updated_at: z.string().optional()
 })
@@ -92,5 +95,35 @@ export const HandoverSchema = z.object({
 })
 export type Handover = z.infer<typeof HandoverSchema>
 
-export const COUNTER_KINDS = ['fact', 'intent', 'hint', 'worker', 'message', 'evidence'] as const
+export const COUNTER_KINDS = [
+  'fact',
+  'intent',
+  'hint',
+  'worker',
+  'message',
+  'evidence',
+  'mandate',
+  'assignment',
+  'report',
+  'event',
+  'effect',
+  'execution'
+] as const
 export type CounterKind = (typeof COUNTER_KINDS)[number]
+
+/** Entity directories under `.prism/` that hold domain records (one file per id). */
+export const ENTITY_DIRS = {
+  facts: 'facts',
+  intents: 'intents',
+  hints: 'hints',
+  messages: 'messages',
+  evidence: 'evidence',
+  mandates: 'mandates',
+  revocations: 'mandate_revocations',
+  assignments: 'assignments',
+  reports: 'reports',
+  events: 'events',
+  effects: 'effects',
+  executions: 'executions'
+} as const
+export type EntityDir = (typeof ENTITY_DIRS)[keyof typeof ENTITY_DIRS]

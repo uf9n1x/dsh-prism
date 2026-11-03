@@ -3,16 +3,19 @@
 // section. Facts are append-only (immutable). Reads validate with zod.
 import { mkdir, readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { atomicWriteJson, existsPath, readJson, withLock } from './lock'
+import { atomicWriteJson, existsPath, readJson, withLock } from './lock.js'
+import { CURRENT_SCHEMA_VERSION } from '../domain/migrate.js'
 import {
   COUNTER_KINDS,
+  ENTITY_DIRS,
   FactSchema,
   IntentSchema,
   ProjectSchema,
   type Fact,
   type Intent,
   type Project
-} from './types'
+} from './types.js'
+import type { z } from 'zod'
 
 const nowIso = () => new Date().toISOString()
 const pad = (n: number) => String(n).padStart(3, '0')
@@ -79,6 +82,9 @@ export class GraphStore {
   async init(origin: string, goal: string, authorization = ''): Promise<Project> {
     await mkdir(this.factsDir, { recursive: true })
     await mkdir(this.intentsDir, { recursive: true })
+    for (const dir of Object.values(ENTITY_DIRS)) {
+      await mkdir(join(this.root, dir), { recursive: true })
+    }
     return withLock(this.lockPath, async () => {
       if (await this.exists()) throw new Error(`prism graph already exists at ${this.root}`)
       const t = nowIso()
@@ -91,6 +97,7 @@ export class GraphStore {
         goal,
         status: 'active',
         counters,
+        schema_version: CURRENT_SCHEMA_VERSION,
         created_at: t,
         updated_at: t
       })
@@ -226,5 +233,68 @@ export class GraphStore {
       out.push(intent)
     }
     return out.sort((a, b) => orderKey(a.id) - orderKey(b.id))
+  }
+
+  async updateIntent(id: string, patch: Partial<Intent>): Promise<Intent> {
+    return withLock(this.lockPath, async () => {
+      const path = join(this.intentsDir, `${id}.json`)
+      const current = IntentSchema.parse(await readJson(path))
+      const next = IntentSchema.parse({ ...current, ...patch, id: current.id, updated_at: nowIso() })
+      await atomicWriteJson(path, next)
+      return next
+    })
+  }
+
+  // -- generic domain entities (Mandate/Assignment/Report/Event/Effect/Execution) --
+  // One file per record, atomic write under the same graph lock. Entities are
+  // append-or-replace (domain records carry their own status transitions), while
+  // facts stay append-only above.
+
+  entityDir(name: string): string {
+    return join(this.root, name)
+  }
+
+  /** Allocate the next id for `kind` and persist the counter bump atomically. */
+  async nextId(kind: string, prefix: string, dirName: string): Promise<string> {
+    return withLock(this.lockPath, () =>
+      this.allocate(kind, prefix, this.entityDir(dirName))
+    )
+  }
+
+  async writeEntity<T>(dirName: string, id: string, value: T): Promise<void> {
+    await withLock(this.lockPath, () =>
+      atomicWriteJson(join(this.entityDir(dirName), `${id}.json`), value)
+    )
+  }
+
+  async readEntity<T>(dirName: string, id: string, schema: z.ZodType<T>): Promise<T> {
+    const raw = await readJson(join(this.entityDir(dirName), `${id}.json`))
+    try {
+      return schema.parse(raw)
+    } catch (err) {
+      throw new Error(`invalid ${dirName} record ${id}: ${(err as Error).message}`)
+    }
+  }
+
+  async readEntityOrNull<T>(dirName: string, id: string, schema: z.ZodType<T>): Promise<T | null> {
+    try {
+      return await this.readEntity(dirName, id, schema)
+    } catch {
+      return null
+    }
+  }
+
+  async listEntities<T>(dirName: string, schema: z.ZodType<T>): Promise<T[]> {
+    const dir = this.entityDir(dirName)
+    const files = await listJsonFiles(dir)
+    const out: T[] = []
+    for (const f of files) {
+      out.push(schema.parse(await readJson(join(dir, f))))
+    }
+    return out.sort((a, b) => {
+      const ai = (a as { id?: string }).id ?? ''
+      const bi = (b as { id?: string }).id ?? ''
+      return orderKey(ai) - orderKey(bi)
+    })
   }
 }
