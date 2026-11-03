@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { PrismEngine } from '../engine/engine.js'
+import { liveSessionCwd } from './cwd.js'
 import { buildBoard, buildEvidence, buildGraph, buildReport, buildWorkers } from '../projection/readmodel.js'
 import { redactSecrets } from '../projection/untrusted.js'
 
@@ -238,18 +239,12 @@ export function createSessionResolver(ctx: any): SessionResolver {
     }
 
     const { preset, source } = presetOf(ctx, session, sessionId)
+    // Prefer the live working directory, exactly like `cwdOf` in tools.ts: a
+    // mid-session directory switch must not make the panel read a stale root.
+    const live = absoluteOrNull(liveSessionCwd(ctx, session))
+    if (live !== null) return { cwd: live, preset, preset_source: source }
     const headerCwd = absoluteOrNull(session?.header?.cwd)
     if (headerCwd !== null) return { cwd: headerCwd, preset, preset_source: source }
-
-    const wd = ctx?.get?.('workingDirectory') ?? ctx?.workingDirectory
-    if (wd !== undefined) {
-      try {
-        const dir = absoluteOrNull(wd.get(session))
-        if (dir !== null) return { cwd: dir, preset, preset_source: source }
-      } catch {
-        // fall through to persistence
-      }
-    }
     return { cwd: absoluteOrNull(persistenceHeader(ctx, sessionId)?.cwd), preset, preset_source: source }
   }
 }

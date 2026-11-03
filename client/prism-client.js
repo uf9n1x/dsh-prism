@@ -54,6 +54,8 @@ window.__ModuleLoader__.load({
         legendFact: '事实',
         legendIntent: '意图',
         legendAssignment: '派单',
+        legendReport: '报告',
+        legendEvidence: '证据',
         selectHint: '点击节点查看详情',
         assignments: '派单',
         executions: '执行',
@@ -96,6 +98,8 @@ window.__ModuleLoader__.load({
         legendFact: 'fact',
         legendIntent: 'intent',
         legendAssignment: 'assignment',
+        legendReport: 'report',
+        legendEvidence: 'evidence',
         selectHint: 'Click a node for detail',
         assignments: 'Assignments',
         executions: 'Executions',
@@ -130,7 +134,15 @@ window.__ModuleLoader__.load({
       cancelled: '#64748b',
       unknown: '#64748b'
     }
-    const KIND_COLOR = { fact: '#0d9488', intent: '#7c3aed', assignment: '#2563eb' }
+    const KIND_COLOR = { fact: '#0d9488', intent: '#7c3aed', assignment: '#2563eb', report: '#b45309', evidence: '#0891b2' }
+    // Legend label key per node kind, so adding a kind touches one place.
+    const LEGEND_KEY = {
+      fact: 'legendFact',
+      intent: 'legendIntent',
+      assignment: 'legendAssignment',
+      report: 'legendReport',
+      evidence: 'legendEvidence'
+    }
 
     const CSS = `
 .prism-root {
@@ -504,7 +516,8 @@ window.__ModuleLoader__.load({
     const COL_GAP = 78
     const COL_HEADER = 24
 
-    const COLUMN = { fact: 0, intent: 1, assignment: 2 }
+    const COLUMN_KINDS = ['fact', 'intent', 'assignment', 'report', 'evidence']
+    const COLUMN = { fact: 0, intent: 1, assignment: 2, report: 3, evidence: 4 }
 
     /**
      * Three fixed columns, top-aligned.
@@ -516,7 +529,7 @@ window.__ModuleLoader__.load({
      * layers visible together no matter how lopsided the counts are.
      */
     function layoutGraph(nodes) {
-      const columns = [[], [], []]
+      const columns = COLUMN_KINDS.map(() => [])
       for (const node of nodes) (columns[COLUMN[node.kind]] ?? columns[0]).push(node)
       const rows = Math.max(1, ...columns.map((list) => list.length))
       const height = COL_HEADER + rows * (NODE_H + NODE_GAP) - NODE_GAP
@@ -526,7 +539,8 @@ window.__ModuleLoader__.load({
           positions.set(node.id, { x: index * (NODE_W + COL_GAP), y: COL_HEADER + row * (NODE_H + NODE_GAP) })
         })
       })
-      return { positions, width: 3 * NODE_W + 2 * COL_GAP, height: Math.max(height, NODE_H) }
+      const width = COLUMN_KINDS.length * NODE_W + (COLUMN_KINDS.length - 1) * COL_GAP
+      return { positions, width, height: Math.max(height, NODE_H) }
     }
 
     function edgePath(from, to) {
@@ -578,7 +592,7 @@ window.__ModuleLoader__.load({
               role: 'img',
               'aria-label': `${nodes.length} ${t.nodes}, ${edges.length} ${t.edges}`
             },
-            ['fact', 'intent', 'assignment'].map((kind, index) =>
+            COLUMN_KINDS.map((kind, index) =>
               h(
                 'g',
                 { key: `h-${kind}` },
@@ -593,7 +607,7 @@ window.__ModuleLoader__.load({
                     className: 'prism-mono',
                     opacity: 0.62
                   },
-                  t[kind === 'fact' ? 'legendFact' : kind === 'intent' ? 'legendIntent' : 'legendAssignment']
+                  t[LEGEND_KEY[kind]]
                 )
               )
             ),

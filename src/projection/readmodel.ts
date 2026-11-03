@@ -268,20 +268,20 @@ export async function buildReport(engine: PrismEngine): Promise<ReportView2> {
   }
 }
 
-export type GraphNodeKind = 'fact' | 'intent' | 'assignment'
+export type GraphNodeKind = 'fact' | 'intent' | 'assignment' | 'report' | 'evidence'
 
 export interface GraphNode {
   id: string
   kind: GraphNodeKind
   label: string
-  /** Derived frontier state for intents, assignment status otherwise. */
+  /** Derived frontier state for intents, assignment status / report kind otherwise. */
   state: string
 }
 
 export interface GraphEdge {
   from: string
   to: string
-  kind: 'from' | 'result' | 'claim'
+  kind: 'from' | 'result' | 'claim' | 'report' | 'evidence'
 }
 
 export interface GraphView {
@@ -292,16 +292,29 @@ export interface GraphView {
 }
 
 /**
- * Graph view: the fact-intent DAG plus the assignments that claim its intents.
- * State is derived from structure (`classify`), never read from a mirror field.
+ * Graph view: the fact-intent DAG plus the assignments that claim its intents,
+ * the reports those assignments produced, and the evidence facts cite.
+ *
+ * Reports and evidence used to be dropped, so a real run could show a frozen
+ * graph while dozens of reports and hundreds of executions happened (BUG-002).
+ * They are now first-class nodes — a report hangs off its assignment, evidence
+ * off the facts that reference it — so the graph tracks real progress, not just
+ * reasoning. State is derived from structure (`classify`), never a mirror field.
  */
 export async function buildGraph(engine: PrismEngine): Promise<GraphView> {
-  const empty: GraphView = { present: false, nodes: [], edges: [], counts: { fact: 0, intent: 0, assignment: 0 } }
+  const empty: GraphView = {
+    present: false,
+    nodes: [],
+    edges: [],
+    counts: { fact: 0, intent: 0, assignment: 0, report: 0, evidence: 0 }
+  }
   if (!(await engine.exists())) return empty
-  const [intents, facts, assignments] = await Promise.all([
+  const [intents, facts, assignments, reports, evidence] = await Promise.all([
     engine.store.listIntents(),
     engine.store.listFacts(),
-    engine.listAssignments()
+    engine.listAssignments(),
+    engine.listReports(),
+    engine.store.listEntities('evidence', EvidenceSchema)
   ])
   const frontier = classify(intents, facts)
   const stateOf = new Map<string, string>()
@@ -313,6 +326,7 @@ export async function buildGraph(engine: PrismEngine): Promise<GraphView> {
   const edges: GraphEdge[] = []
   for (const fact of facts) {
     nodes.push({ id: fact.id, kind: 'fact', label: oneLine(fact.title, 120), state: 'fact' })
+    for (const evId of fact.evidence) edges.push({ from: fact.id, to: evId, kind: 'evidence' })
   }
   for (const intent of intents) {
     nodes.push({
@@ -328,6 +342,13 @@ export async function buildGraph(engine: PrismEngine): Promise<GraphView> {
     nodes.push({ id: assignment.id, kind: 'assignment', label: assignment.intent_id, state: assignment.status })
     edges.push({ from: assignment.intent_id, to: assignment.id, kind: 'claim' })
   }
+  for (const report of reports) {
+    nodes.push({ id: report.id, kind: 'report', label: oneLine(report.text, 120), state: report.kind })
+    edges.push({ from: report.assignment_id, to: report.id, kind: 'report' })
+  }
+  for (const item of evidence) {
+    nodes.push({ id: item.id, kind: 'evidence', label: oneLine(item.title, 120), state: 'evidence' })
+  }
 
   return {
     present: true,
@@ -336,7 +357,9 @@ export async function buildGraph(engine: PrismEngine): Promise<GraphView> {
     counts: {
       fact: nodes.filter((n) => n.kind === 'fact').length,
       intent: nodes.filter((n) => n.kind === 'intent').length,
-      assignment: nodes.filter((n) => n.kind === 'assignment').length
+      assignment: nodes.filter((n) => n.kind === 'assignment').length,
+      report: nodes.filter((n) => n.kind === 'report').length,
+      evidence: nodes.filter((n) => n.kind === 'evidence').length
     }
   }
 }

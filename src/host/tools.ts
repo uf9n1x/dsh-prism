@@ -6,6 +6,7 @@
 // dispatch workers and read reports. Worker tools execute only through the
 // ExecutionBackend and are authorized against the assignment's mandate first.
 import { PrismRuntime, rootFor, type NativeOps } from './runtime.js'
+import { liveSessionCwd } from './cwd.js'
 import { COMMANDER_TOOL_NAMES, WORKER_TOOL_NAMES } from '../orchestrator/catalog.js'
 import type { ExecutionBackend } from '../exec/backend.js'
 import type { KaliConfig } from '../exec/kali.js'
@@ -77,16 +78,10 @@ const objectSchema = (properties: Record<string, unknown>, required: string[] = 
 
 /** Session working directory, falling back to the process cwd outside a host. */
 export function cwdOf(ctx: AgentContext, exec: any): string {
-  const wd = ctx.get('workingDirectory')
-  const session = exec?.agent?.session
-  if (wd !== undefined && session !== undefined) {
-    try {
-      const dir = wd.get(session)
-      if (typeof dir === 'string' && dir.length > 0) return dir
-    } catch {
-      // fall through to the caller-provided cwd
-    }
-  }
+  // Shared with the read-only view route (src/host/cwd.ts): the live working
+  // directory wins, so the panel and the tools never disagree on the root.
+  const live = liveSessionCwd(ctx, exec?.agent?.session)
+  if (live !== null) return live
   // Host exec objects carry no cwd; tests and out-of-host callers supply one.
   if (typeof exec?.cwd === 'string' && exec.cwd.length > 0) return exec.cwd
   return process.cwd()
@@ -353,7 +348,7 @@ export function commanderTools(ctx: AgentContext, factory: RuntimeFactory): Tool
     ),
     tool(
       'prism_reason',
-      'Write new intents into the graph. Each intent must cite existing facts in `from`. An intent is ready once all of its from-facts exist. Nothing is dispatched by this call.',
+      'Write new intents into the graph. Each intent must cite existing facts in `from`. An intent is ready once all of its from-facts exist. Nothing is dispatched by this call. Prefer several small, single-purpose intents (one per challenge or sub-goal) over one long-running intent; when a worker result arrives, record the fact and let that intent close before reasoning the next step.',
       objectSchema(
         {
           intents: {

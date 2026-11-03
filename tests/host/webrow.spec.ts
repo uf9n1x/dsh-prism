@@ -14,6 +14,7 @@ import {
   payloadFor,
   serializeView
 } from '../../src/host/webrow'
+import { cwdOf } from '../../src/host/tools'
 
 let dir: string
 let runtime: PrismRuntime
@@ -209,17 +210,50 @@ describe('P8 view route wiring', () => {
     expect(() => apply({ effect: () => undefined, get: () => undefined })).not.toThrow()
   })
 
-  it('resolves a session cwd and preset from the live session header', () => {
+  it('falls back to the session header cwd when the live working directory is unavailable', () => {
     const session = { header: { cwd: 'C:\\work\\acme', agentPreset: 'prism' } }
     const ctx = {
       get(name: string) {
         if (name === 'sessions') return { get: (id: string) => (id === 's1' ? session : undefined) }
         if (name === 'agentPresets') return { presetForSession: () => 'prism' }
-        if (name === 'workingDirectory') throw new Error('should not be reached')
+        if (name === 'workingDirectory') throw new Error('no workingDirectory service in this profile')
         return undefined
       }
     }
     expect(createSessionResolver(ctx)('s1')).toEqual({ cwd: 'C:\\work\\acme', preset: 'prism', preset_source: 'registry' })
+  })
+
+  // BUG-001: the panel resolved its root from `header.cwd` (the directory at
+  // creation) while the tools ran in the live `workingDirectory`, so after the
+  // operator switched into a sub-directory (`_work/nss`) the five views read a
+  // different, frozen `.prism`. The resolver must prefer the live working
+  // directory, exactly like `cwdOf`, and fall back to the header only when the
+  // service answers nothing.
+  it('prefers the live working directory over a stale session header cwd (BUG-001)', () => {
+    const session = { header: { cwd: 'C:\\work\\pentest', agentPreset: 'prism' } }
+    const ctx = {
+      get(name: string) {
+        if (name === 'sessions') return { get: (id: string) => (id === 's1' ? session : undefined) }
+        if (name === 'agentPresets') return { presetForSession: () => 'prism' }
+        if (name === 'workingDirectory') return { get: () => 'C:\\work\\pentest\\_work\\nss' }
+        return undefined
+      }
+    }
+    expect(createSessionResolver(ctx)('s1')).toMatchObject({ cwd: 'C:\\work\\pentest\\_work\\nss', preset: 'prism' })
+  })
+
+  it('agrees with the tool-side cwd when header.cwd and workingDirectory differ (BUG-001)', () => {
+    const session = { header: { cwd: '/old' } }
+    const ctx = {
+      get(name: string) {
+        if (name === 'sessions') return { get: () => session }
+        if (name === 'workingDirectory') return { get: (s: any) => (s === session ? '/new' : '') }
+        return undefined
+      }
+    }
+    const exec = { agent: { session } }
+    expect(cwdOf(ctx as any, exec)).toBe('/new')
+    expect(createSessionResolver(ctx)('s1')).toMatchObject({ cwd: '/new' })
   })
 
   it('falls back to workingDirectory, and to the header preset, when no registry answers', () => {
