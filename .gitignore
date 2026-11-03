@@ -10,5 +10,6 @@ lib/
 # test / tool artifacts
 coverage/
 *.tsbuildinfo
+.tmp/
 .DS_Store
 Thumbs.db
