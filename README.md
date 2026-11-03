@@ -11,15 +11,15 @@ Prism 是 DSH Desktop 的一个**自包含 bundle**：注册 **「Prism 渗透�
 
 | 项 | 状态 |
 |---|---|
-| 源码 + 测试 | ✅ `src/` **31** 个 TS 文件；`tests/` **18 文件 / 116 项全绿** |
+| 源码 + 测试 | ✅ `src/` **32** 个 TS 文件 + `client/` 纯 JS bundle；`tests/` **20 文件 / 142 项全绿** |
 | 构建 | ✅ `npx tsc -p tsconfig.json` → exit 0，产出 `lib/` |
 | 真实安装 | ✅ 独立 profile 上 `dsh plugin add` 成功，页面出现「Prism 渗透模式」 |
 | 真实卸载 | ✅ `plugin remove` 后 bundle 清单与配置零 Prism 行 |
-| 五视图 UI | ❌ **未实现**（见 §8 第 1 条） |
+| 五视图 UI | ✅ 已实现（会话头部入口 → 面板五 tab）；🟡 面板像素未截（见 §8 第 1 条） |
 | `application: applied` | ⚠️ **未取得**（CLI 安装语义为 restart-required，见 §8 第 2 条） |
 | Kali 真实联通 | ⚠️ **未验证**（标 `unverified`，见 §8 第 3 条） |
 
-完整逐项状态见 `docs/ACCEPTANCE.md`（15 ✅ / 4 🟡 / 1 ⬜）。
+完整逐项状态见 `docs/ACCEPTANCE.md`（16 ✅ / 4 🟡 / 0 ⬜）。
 
 ---
 
@@ -58,6 +58,13 @@ CLI 会自动把声明了 `dsh.bundle` 的包追加到 `dsh.profile.bundles`，*
 { "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-prism"] } } }
 ```
 
+### 3.1.1 真实 CLI 位置（不在 PATH 上）
+
+本机安装目录下的启动器：
+```text
+<dsh-install>\resources\runtime\cli\bin\dsh.cmd
+```
+
 ### 3.2 在运行中的 Desktop 里安装（未取得 `applied`）
 
 若 Desktop 正在运行，应通过 `plugin_manager install_bundle` 传**绝对路径**安装，它会返回实时 HMR 结果（期望 `application: applied`）。本仓库**尚未**在运行态复验这一项（见 §8）。
@@ -85,6 +92,11 @@ dsh --profile prismverify --dump-config | grep -A3 prism
 dsh --profile prismverify --no-open
 ```
 
+UI 侧还要确认两件事（`docs/evidence/p8-ui.md` 有实测输出）：
+1. 页面 HTML 的 `__DSH_BOOT__` 里有
+   `{"id":"dsh-prism","url":"plugins/??dsh-prism/client.js&rev=…","immediately":true}`；
+2. 浏览器 console 没有 `slot entry crashed`。
+
 > ⚠️ **headless 模板 profile 的已知差异**：headless 没有 `agentPresets` 服务，会出现
 > `preset-prism ... pending (waiting for service: agentPresets)`。这是正常现象——请用含该服务的 web/desktop profile 验证。
 
@@ -106,6 +118,16 @@ Done in 610ms using pnpm v11.28.5
 **数据不会被卸载删除**：`.prism/` 位于你的**工作目录**，与插件安装无关。要彻底清理某次 engagement，手动删除该项目下的 `.prism/`。
 
 ---
+
+## 4.5 界面：Prism 面板从哪进
+
+- **入口**：Prism 会话的**会话头部右侧**出现一个 `Prism` 按钮 —— 只有在
+  「该会话 preset = `prism`」**且**「工作目录里存在 `.prism/` engagement」时才渲染；
+  两个条件任一不满足时组件返回 `null`，**不产生任何可见界面**（普通编码/PPT 会话完全看不到）。
+- **面板**：点开后是一个覆盖层面板，内部五个页签：**图谱 / 前沿 / 工兵 / 证据 / 报告**，
+  全部只读 `.prism/`，每 4 秒刷新一次（仅在面板打开且页面可见时）。
+- 数据来自 `GET /prism/view?view=<name>&session=<id>`（同源只读，见 `src/host/webrow.ts`）；
+  该路由**只接受 session id，不接受任何路径参数**。
 
 ## 5. 使用：两种角色，两套工具面
 
@@ -170,10 +192,10 @@ new KaliBackend({ transport: 'ssh' | 'mcp', host, port, auth })
 
 > 按诚实原则，以下项**没有被写成已完成**。
 
-1. **❌ 五视图 UI 完全未实现**（Graph / Frontier / Workers / Evidence / Report）。
-   已交付的只有 Host 侧只读投影 `src/projection/readmodel.ts`（board/workers/evidence/report，均有测试）。
-   缺 `src/projection/remote.ts`（`@Remote` 声明）与 `src/client/*`。阻塞原因：DSH 的 Remote 需要 **typert codegen**，本仓库没有该工具链。
-   **因此 `package.json` 故意不声明 `dsh.client`**——无 client bundle 却声明会让 web boot 失败。`tests/bundle.spec.ts` 有一条守护断言锁住这一点。
+1. **🟡 五视图面板的页面渲染没有截图。** 机制已全部在真实宿主上验证（六视图返回真实投影、
+   客户端 bundle 进 `__DSH_BOOT__` 并下发、console 零错误、普通会话零 UI），但「点开面板看到五个 tab」
+   这一步没做：Prism 入口只对**已选中的 prism 会话**渲染，而侧边栏不列「没有任何 prompt 的空白会话」，
+   要让它出现需要发一条真实消息（一次模型调用）。见 `docs/evidence/p8-ui.md` §8。
 2. **⚠️ `application: applied` 未取得**。该项由 `plugin_manager` 工具的实时 HMR 返回；本次通过 `dsh plugin add` 在**未运行**的 profile 上安装，只可能得到 restart-required 语义。需在运行中的 Desktop 上复验。
 3. **⚠️ Kali 真实联通未验证**。仅有契约测试（5 项）与 `verified:false` 行为保证。
 4. **⚠️ 真实模型驱动的子代理派单未跑通**。`dispatch → startActivation → worker 执行 → subagent/end → 唤醒` 的完整跨进程链路需要 LLM 凭证与运行态会话；当前在 `NativeOps` 注入层（stub）上证明。
@@ -182,6 +204,8 @@ new KaliBackend({ transport: 'ssh' | 'mcp', host, port, auth })
 7. **⚠️ Linux / macOS 执行后端未实测**（仅 Windows 路径验证）。
 8. **⚠️ Watchdog 无自动触发源**。`src/runtime/watchdog.ts` 的四操作与准入检查已实现并测试，但"谁在何时调用 `scan()`"尚未接入事件流——需外部调度或后续阶段补齐。
 9. **⚠️ 护栏阈值未独立成模块**。原计划的 `runtime/guardrails.ts`（maxAutoTurns=40 / cooldown / human-reset）未拆出；轮询抑制由 fast path 的设计本身保证（无定时器），但自动轮次上限未实现。
+10. **⚠️ 五视图的数据通道不是 `@Remote`**。用的是同源只读 HTTP 路由，因为 typert codegen 只在 DSH monorepo 的 `build:lib` 里。视图契约（六个 payload 形状）独立于通道，将来可平移到 `@Remote`（D22）。
+11. **⚠️ 客户端 bundle 为手写纯 JS，无类型检查**。它有 8 项契约测试（注册项/顺序/空态返回 null/不注册 `conversation.view`/相对路径/不碰 DOM），但没有 TS 类型约束。
 
 ---
 
@@ -212,7 +236,7 @@ new KaliBackend({ transport: 'ssh' | 'mcp', host, port, auth })
 ```bash
 npx tsc -p tsconfig.json --noEmit    # 类型检查
 npx tsc -p tsconfig.json             # 构建 lib/
-npx vitest run                       # 全量：18 files / 116 tests
+npx vitest run                       # 全量：20 files / 142 tests
 npx vitest run tests/host            # 单目录
 ```
 
