@@ -37,20 +37,18 @@ async function seed(): Promise<void> {
   const intentId = board.frontier.available[0]!.id
   await runtime.dispatch({ intent_id: intentId, mandate_id: mandate.id, brief: 'enumerate the target' }, ops)
   const assignment = (await runtime.engine.listAssignments())[0]!
-  await runtime.engine.store.writeEntity('evidence', 'e001', {
-    id: 'e001',
+  const evidence = await runtime.engine.addEvidence({
     title: 'nmap output',
     summary: 'open ports 22/80',
     path: 'evidence/e001.txt',
-    bytes: 42,
-    created_at: new Date().toISOString()
+    bytes: 42
   })
   await runtime.engine.store.addFact({
     title: 'host is up',
     summary: 'icmp echo reply observed',
     creator: assignment.worker_session ?? assignment.id,
     source_intent: intentId,
-    evidence: ['e001']
+    evidence: [evidence.id]
   })
   await runtime.engine.addReport({
     assignment_id: assignment.id,
@@ -60,17 +58,23 @@ async function seed(): Promise<void> {
   })
 }
 
-describe('graph view includes live progress (BUG-002)', () => {
-  it('projects report and evidence nodes and their edges', async () => {
+describe('graph view stays a clean DAG and reports live activity (BUG-002/004)', () => {
+  it('surfaces reports/executions/evidence as activity counts, not as clutter nodes', async () => {
     await seed()
     const graph = await buildGraph(runtime.engine)
-    const kinds = graph.nodes.map((n) => n.kind)
-    expect(kinds).toContain('report')
-    expect(kinds).toContain('evidence')
-    expect(graph.counts.report).toBeGreaterThan(0)
-    expect(graph.counts.evidence).toBeGreaterThan(0)
-    expect(graph.edges.some((e) => e.kind === 'report')).toBe(true)
-    expect(graph.edges.some((e) => e.kind === 'evidence')).toBe(true)
+    expect(graph.activity.reports).toBeGreaterThan(0)
+    expect(graph.activity.evidence).toBeGreaterThan(0)
+    // The DAG only holds the three reasoning kinds; reports are shown as counts.
+    for (const node of graph.nodes) expect(['fact', 'intent', 'assignment']).toContain(node.kind)
+    expect(Object.keys(graph.counts).sort()).toEqual(['assignment', 'fact', 'intent'])
+  })
+
+  it('labels each worker node by its own assignment id, not the shared intent id (BUG-004)', async () => {
+    await seed()
+    const graph = await buildGraph(runtime.engine)
+    const workers = graph.nodes.filter((n) => n.kind === 'assignment')
+    expect(workers.length).toBeGreaterThan(0)
+    for (const worker of workers) expect(worker.label).toMatch(/^a\d{3,}$/)
   })
 
   it('keeps the original fact/intent/assignment nodes and counts', async () => {

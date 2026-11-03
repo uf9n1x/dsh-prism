@@ -134,15 +134,9 @@ window.__ModuleLoader__.load({
       cancelled: '#64748b',
       unknown: '#64748b'
     }
-    const KIND_COLOR = { fact: '#0d9488', intent: '#7c3aed', assignment: '#2563eb', report: '#b45309', evidence: '#0891b2' }
+    const KIND_COLOR = { fact: '#0d9488', intent: '#7c3aed', assignment: '#2563eb' }
     // Legend label key per node kind, so adding a kind touches one place.
-    const LEGEND_KEY = {
-      fact: 'legendFact',
-      intent: 'legendIntent',
-      assignment: 'legendAssignment',
-      report: 'legendReport',
-      evidence: 'legendEvidence'
-    }
+    const LEGEND_KEY = { fact: 'legendFact', intent: 'legendIntent', assignment: 'legendAssignment' }
 
     const CSS = `
 .prism-root {
@@ -516,8 +510,8 @@ window.__ModuleLoader__.load({
     const COL_GAP = 78
     const COL_HEADER = 24
 
-    const COLUMN_KINDS = ['fact', 'intent', 'assignment', 'report', 'evidence']
-    const COLUMN = { fact: 0, intent: 1, assignment: 2, report: 3, evidence: 4 }
+    const COLUMN_KINDS = ['fact', 'intent', 'assignment']
+    const COLUMN = { fact: 0, intent: 1, assignment: 2 }
 
     /**
      * Three fixed columns, top-aligned.
@@ -575,11 +569,13 @@ window.__ModuleLoader__.load({
       }
       const dim = (id) => (near === null || near.has(id) ? 1 : 0.32)
       const picked = selected === null ? null : byId.get(selected)
+      const activity = (payload && payload.activity) || {}
+      const activityText = ` · ${activity.reports ?? 0} ${t.report} · ${activity.executions ?? 0} ${t.executions} · ${activity.evidence ?? 0} ${t.evidence}`
 
       return h(
         'div',
         null,
-        h('div', { className: 'prism-graph-meta' }, `${nodes.length} ${t.nodes} · ${edges.length} ${t.edges}`),
+        h('div', { className: 'prism-graph-meta' }, `${nodes.length} ${t.nodes} · ${edges.length} ${t.edges}${activityText}`),
         h(
           'div',
           { className: 'prism-card prism-graph-wrap', style: { padding: '14px 14px 10px' } },
@@ -1075,7 +1071,14 @@ window.__ModuleLoader__.load({
       const blocked = Array.isArray(frontier.blocked) ? frontier.blocked.length : 0
       const facts = boardPayload && Array.isArray(boardPayload.facts) ? boardPayload.facts.length : 0
 
-      const counts = { graph: facts, frontier: openIntents, workers: active, evidence: 0, report: 0 }
+      const c = (boardPayload && boardPayload.counts) || {}
+      const counts = {
+        graph: (c.facts ?? facts) + (c.intents ?? 0) + (c.assignments ?? 0),
+        frontier: openIntents,
+        workers: c.assignments ?? assignments.length,
+        evidence: c.evidence ?? 0,
+        report: c.reports ?? 0
+      }
 
       return h(
         'div',

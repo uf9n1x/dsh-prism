@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { mkdir, readdir } from 'node:fs/promises'
 import { GraphStore } from '../graph/store.js'
 import { atomicWriteJson, existsPath, readJson } from '../graph/lock.js'
-import { ENTITY_DIRS, type Intent } from '../graph/types.js'
+import { ENTITY_DIRS, EvidenceSchema, type Evidence, type Intent } from '../graph/types.js'
 import { firstOutOfScope } from '../domain/scope.js'
 import {
   ASSIGNMENT_STATUSES,
@@ -364,6 +364,27 @@ export class PrismEngine {
     })
     await this.store.writeEntity(ENTITY_DIRS.reports, id, report)
     return report
+  }
+
+  // -- evidence ------------------------------------------------------------
+
+  /**
+   * Record an immutable evidence artifact a worker actually observed (a flag
+   * file, config, banner, hash). Evidence ids are cited from fact.evidence.
+   * path defaults to a synthetic in-tree location so it is never empty.
+   */
+  async addEvidence(input: { title: string; summary: string; path?: string; bytes?: number }): Promise<Evidence> {
+    const id = await this.store.nextId('evidence', 'e', ENTITY_DIRS.evidence)
+    const evidence = EvidenceSchema.parse({
+      id,
+      title: input.title,
+      summary: input.summary,
+      path: input.path !== undefined && input.path.length > 0 ? input.path : `evidence/${id}`,
+      bytes: input.bytes ?? 0,
+      created_at: nowIso()
+    })
+    await this.store.writeEntity(ENTITY_DIRS.evidence, id, evidence)
+    return evidence
   }
 
   // -- events (persist first, then route) ----------------------------------

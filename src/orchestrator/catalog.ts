@@ -25,7 +25,7 @@ export const WORKER_EXEC_TOOLS = [
   'prism_run'
 ] as const
 
-export const WORKER_TOOL_NAMES = ['prism_worker_report', ...WORKER_EXEC_TOOLS] as const
+export const WORKER_TOOL_NAMES = ['prism_worker_report', 'prism_evidence_add', ...WORKER_EXEC_TOOLS] as const
 
 // Native DSH execution tools that must never reach the commander.
 const NATIVE_EXEC_TOOLS = new Set([

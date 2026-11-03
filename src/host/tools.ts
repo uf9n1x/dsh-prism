@@ -550,6 +550,29 @@ export function workerTools(ctx: AgentContext, factory: RuntimeFactory): ToolDef
       }
     ),
     tool(
+      'prism_evidence_add',
+      'Record an immutable evidence artifact you actually observed (a flag file, config, banner, hash). Returns the new evidence id; cite it in a later fact.evidence. `path` is an optional workspace-relative location, `bytes` an optional size.',
+      objectSchema(
+        {
+          title: { type: 'string' },
+          summary: { type: 'string' },
+          path: { type: 'string' },
+          bytes: { type: 'number' }
+        },
+        ['title', 'summary']
+      ),
+      async (args, exec) => {
+        const rt = factory.get(ctx, exec)
+        await assignmentFor(rt, exec)
+        return rt.engine.addEvidence({
+          title: String(args.title),
+          summary: String(args.summary),
+          path: args.path === undefined ? '' : String(args.path),
+          bytes: typeof args.bytes === 'number' ? args.bytes : 0
+        })
+      }
+    ),
+    tool(
       'prism_exec_start',
       'Start a command asynchronously on the assignment backend. Returns an execution id immediately; poll prism_exec_output and stop with prism_exec_stop. The command is checked against the assignment\'s mandate before it starts.',
       objectSchema({ command: { type: 'string' }, timeout_ms: { type: 'number' } }, ['command']),
