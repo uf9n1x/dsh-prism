@@ -15,3 +15,11 @@ coverage/
 .tmp/
 .DS_Store
 Thumbs.db
+
+# internal / process artifacts — kept locally, never committed
+.workbuddy/
+.ai-memory/
+PRISM_CONTINUE_PROMPT.md
+PRISM_NEW_SESSION_PROMPT.md
+开发提示词.md
+原文.md
