@@ -1,356 +1,343 @@
-# Prism — 授权红队 / 渗透模式（DSH Desktop 插件）
+# Prism — 授权渗透 / 红队编排插件（DSH Desktop）
 
 > ⚠️ **仅用于获得明确书面授权的安全测试、红队评估、CTF 与漏洞赏金。**
-> 作者不对未授权使用负责。使用者须自行确认对目标拥有书面授权。
+> 使用者须自行确认对目标拥有书面授权。作者不对未授权使用负责。
 
-Prism 是 DSH Desktop 的一个**自包含 bundle**：注册 **「Prism 渗透模式」** agent preset，由**指挥官主 Agent**通过**事实—意图图**指挥**可替换的工兵子代理**，事件驱动自动推进授权渗透任务。所有结论、证据、状态、交接持久化在会话工作目录的 `.prism/` 下，可断点恢复。**默认 Windows 本机运行，不依赖 Docker / Kali。**
+Prism 是 DSH Desktop 的一个**自包含插件（bundle）**，安装后注册一个叫 **「Prism 渗透模式」** 的 agent 预设。它把一次授权渗透任务拆成「**指挥官决定做什么 + 工兵去执行**」：指挥官只做规划与派单，永远不亲自跑扫描/利用；执行交给可替换的工兵子代理。两者通过一张持久化的**事实—意图图（Fact–Intent graph）**协作，所有状态落在工作目录的 `.prism/` 里，因此可以断点恢复、可审计、可被只读面板观测。
+
+默认 **Windows 本机**执行，**不依赖 Docker / Kali**；Kali/远程执行是可选项，接不上会如实报失败，绝不伪造成功。
 
 ---
 
-## 1. 交付状态
+## 目录
 
-| 项 | 状态 |
+1. [它解决什么问题](#1-它解决什么问题)
+2. [核心概念](#2-核心概念)
+3. [架构](#3-架构)
+4. [一次任务如何流转](#4-一次任务如何流转)
+5. [数据模型（`.prism/`）](#5-数据模型prism)
+6. [安装](#6-安装)
+7. [使用](#7-使用)
+8. [配置](#8-配置)
+9. [安全与授权](#9-安全与授权)
+10. [已知边界](#10-已知边界)
+11. [设计取舍：与最初设想的关系](#11-设计取舍与最初设想的关系)
+12. [开发](#12-开发)
+13. [文档](#13-文档)
+
+---
+
+## 1. 它解决什么问题
+
+一次渗透/红队任务本质是一个**长链路、可中断、需要留痕**的过程：侦察 → 发现 → 决策下一步 → 执行 → 再发现。通用聊天型 Agent 做这件事有两个硬伤：
+
+- **状态漂移**：进展存在上下文里，关掉就丢，无法断点续跑，也无法复核"我当时凭什么这么判断"。
+- **角色混杂**：同一个模型既要决定"打哪"，又要亲自"动手"，容易越权、也难把执行替换成更合适的执行体。
+
+Prism 的取舍是把这两点交给**领域模型**而不是提示词：
+
+- 用**不可变的事实 + 结构推导的意图**记录"知道了什么、下一步干什么"，全量落盘在 `.prism/`；
+- 把"决策"和"执行"拆成两个**工具面互斥**的预设（指挥官 / 工兵），隔离靠组合而非运行时开关；
+- 用**不可变授权凭证（Mandate）**在每次执行前做确定性校验，模型无法靠"说"越权。
+
+---
+
+## 2. 核心概念
+
+| 概念 | 含义 |
 |---|---|
-| 源码 + 测试 | ✅ `src/` **37** 个 TS 文件 + `client/` 纯 JS bundle；`tests/` **26 文件 / 245 项全绿** |
-| 构建 | ✅ `npx tsc -p tsconfig.json` → exit 0，产出 `lib/` |
-| 真实安装 | ✅ 独立 profile 上 `dsh plugin add` 成功，页面出现「Prism 渗透模式」 |
-| 真实卸载 | ✅ `plugin remove` 后 bundle 清单与配置零 Prism 行 |
-| 运行态热应用 | ✅ 运行中宿主 `installBundle` / `removeBundle` 均返回 `application: "applied"` |
-| 五视图 UI | ✅ 入口在「对话 / 轨迹」同排的 `conversation.view` 页签（D27）；图谱是 SVG，五页签均已截图（`docs/evidence/shots/panel-*.png`） |
-| Kali 远程执行 | ✅ SSH transport 已实现并在真实主机往返验证（该机为 Ubuntu，非 Kali 镜像） |
-| 真实靶场全流程 | ✅ 模型驱动、跨进程、经 SSH 在 VM 内对 docker DVWA 靶场跑通（`docs/evidence/lab-run.md`） |
-| 授权模型 | ✅ 常驻预授权（默认不弹审批），范围检查不变；`config.preAuthorized: false` 可回退交互审批（D28） |
-
-完整逐项状态见 `docs/ACCEPTANCE.md`（23 ✅ / 0 🟡 / 0 ⬜）。
+| **指挥官（commander）** | `prism` 预设。读事实、写意图、派单、纠偏、复核。**没有任何执行工具**。 |
+| **工兵（worker）** | `prism-worker` 预设。只执行被派的某个意图，用结构化报告回报。**没有任何控制工具**。 |
+| **事实（Fact）** | 不可变结论节点，带证据引用。图的"已知"。 |
+| **意图（Intent）** | 工作单元，`from` 引用事实、`to` 指向产出。是否"就绪"完全由图结构推导。 |
+| **前沿（Frontier）** | 对整张意图图做一次分类得到的**工作队列**，分 `ready / available / running / blocked / done` 五个桶；指挥官派单与面板都读它，没有独立的 status 字段。 |
+| **派单（Assignment）** | 一次工兵执行尝试，独立于会话运行时状态，可失败/重试/换人/接班。 |
+| **报告（Report）** | 工兵的结构化回报：`progress / waiting / ready / blocked / failed / cancelled`。 |
+| **Mandate** | 不可变授权凭证：目标 / 动作 / 后端 / 强度。只能收紧，不能放宽。 |
+| **`.prism/`** | 领域**唯一权威存储**，一文件一节点；`PrismEngine` 是唯一写入口，UI 只读投影。 |
 
 ---
 
-## 2. 环境要求
+## 3. 架构
 
-- **DSH Desktop `0.2.1-rc.5`** 或更高的兼容版本。
-- **Node ≥ 20**（仅**构建 / 测试**需要；安装与运行本身由 DSH 宿主提供运行时，不要求你手动配置 Node）。注意：本项目测试用 `vitest@4`，在 **Node 21 上启动即崩**（`util.styleText` 不接受数组参数）；开发/测试请用 Node 22 或 24（可用 DSH 自带 bundled Node 24.21.0）。
-- pnpm ≥ 9（`dsh plugin add` 内部使用 pnpm；本次验证环境为 pnpm 11.28.5）。
-- Windows 为本机执行的默认与已验证平台（`cmd.exe` + `taskkill`）。Linux/macOS 的执行后端代码路径存在但**未实测**。
+### 3.1 单包组成
 
----
-
-## 3. 安装（与其它插件同一套方式）
-
-> 本插件以**本地 bundle** 交付（`0.1.0`，未发布到 npm / 市场）。安装方式与其它插件完全一样——
-> 走 DSH 的「插件面板」或 `dsh plugin`，只是“来源”填本目录的**绝对路径**。装好后**不需要手改任何配置**。
-> 本机安装目录示例：`<path-to-dsh-prism>`。
-
-安装前只需确认一次：`lib/` 已构建好（仓库/本目录已带）。**只有你改过 `src/`** 才需要重建：
-```bash
-npx tsc -p tsconfig.json
+```
+dsh-prism/
+├── package.json            # bundle 声明：dsh.bundle.patch + dsh.client + 子路径 exports
+├── cordis.patch.yml        # 全局 host 行：prism-host（零工具）+ prism-web（只读视图路由）
+├── presets/
+│   ├── prism.patch.yml         # 指挥官组合（prism）
+│   └── prism-worker.patch.yml  # 工兵组合（prism-worker）
+├── src/
+│   ├── index.ts            # 包入口 = 全局 host 行（只监听 subagent/end）
+│   ├── graph/              # 图引擎：types / lock / store / frontier / validate（纯，无 UI）
+│   ├── domain/             # mandate / assignment / report / event / effect / execution / scope / migrate
+│   ├── engine/             # PrismEngine —— 唯一领域写者
+│   ├── exec/               # backend(命令分类) + local(异步) + kali + ssh(OpenSSH) + credential
+│   ├── host/               # runtime(控制面) + tools + commander + worker + webrow + cwd + config
+│   ├── orchestrator/       # catalog(工具目录/结构断言) + reconcile
+│   ├── runtime/            # fastpath(事件) + outbox + recover + watchdog + guardrails
+│   ├── projection/         # readmodel(只读投影) + untrusted(净化/脱敏)
+│   └── protocol/           # commander / worker 的系统提示词 section
+├── client/
+│   └── prism-client.js     # 纯 JS 面板 bundle（手写，无 bundler）
+└── tests/                  # 与 src 镜像
 ```
 
-> 提示：若「插件面板」的安装输入框只接受**市场包名**，本插件是本地目录，直接用 §3.2 的 CLI 一条命令
-> 安装即可——它和面板背后是同一套 `pluginManager`，只是“来源”不同。
+**依赖方向单向**：`graph → domain → engine → {exec, runtime, host, projection}`；`projection` 只读、不被写入方依赖。核心图/领域逻辑不进 UI 也不进提示词。
 
-### 3.1 图形界面安装（推荐：与其它插件一致，运行中热应用、不用重启）
+**两个工程约束**：
+- **零运行时依赖 DSH 包**：不 `import` 任何 `@deepseek-ai/*`，`prism_*` 工具用纯 JSON Schema 对象声明，安装包里只有打包 JS，不依赖 `.d.ts`。
+- **TypeScript ESM**：相对导入必须带 `.js`。
 
-1. 打开 DSH Desktop →「插件」面板 →「安装 / 添加 bundle」；
-2. 来源填本插件目录的**绝对路径**，例如 `<path-to-dsh-prism>`；
-3. 等待返回 `application: "applied"` 即完成（与装其它插件一样，直接生效）。
-   验收：新建任务时，左下角预设选择器出现 **「Prism 渗透模式」**。
+### 3.2 安装后加载什么
 
-运行中热应用的实测返回见 `docs/evidence/p9-applied.md`：
-```json
-{"stage":"enable","target":"dsh-prism","enabled":true,"changed":true,
- "application":"applied","packageResult":{"exitCode":0,"output":"… Done in 589ms using pnpm v11.28.5"}}
-```
-> 两个真实行为：① 已装着的包再装会返回 `already-installed`，**覆盖安装要先卸载再装**；
-> ② 插件面板背后 RPC 的 `args` 必须是**单个 plain object**（`{spec}` / `{name}`），传数组会被网关拒绝。
+`dsh.bundle.patch` 按序加载三层：
 
-### 3.2 命令行安装（等价）
+1. `cordis.patch.yml` —— 全局行 `prism-host`（永远加载但**零工具**）与 `prism-web`（只读视图 HTTP 路由，`inject: [webServer]`）。
+2. `presets/prism.patch.yml` —— 注册 `prism`：persona / agent-instructions / ask-user / **`dsh-prism/commander`**。
+3. `presets/prism-worker.patch.yml` —— 注册 `prism-worker`：bash / pwsh / fs / fs-search / **`dsh-prism/worker`**，**不含** ask-user / goal / todo / subagent。
 
-```bash
-# 装到你日常使用的 profile（默认名为 desktop；也可先建独立 profile 验证）
-dsh plugin --profile desktop add "<path-to-dsh-prism>"
-```
-实测输出：
-```text
-dependencies:
-+ dsh-prism 0.1.0 <- <path-to-dsh-prism>
-Done in … using pnpm v11.28.5
-```
-CLI 会自动把声明了 `dsh.bundle` 的包加入 `dsh.profile.bundles`，**不需要手改配置**：
-```json
-{ "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-prism"] } } }
-```
+> 控制工具只挂进 `prism`，执行工具只挂进 `prism-worker`。**普通会话（标准/编码/PPT）不会加载任何 `prism_*` 工具和 Prism 提示词**——隔离由"组合"保证，而不是运行时开关。
 
-> - 若 `dsh` 不在 PATH，用本机启动器：`<dsh-install>\resources\runtime\cli\bin\dsh.cmd`。
-> - 用 CLI 对**未运行**的 profile 安装后，需**启动/重启**该 profile 的宿主才会加载；用**插件面板**对
->   运行中的宿主安装则**即时热应用**（无需重启）。
+### 3.3 角色与工具面（结构性互斥）
 
-### 3.3 验证安装
-
-```bash
-# 组合配置里应出现三行：prism-host / preset-prism / preset-prism-worker
-dsh --profile desktop --dump-config | Select-String -Pattern 'prism-host|preset-prism|Prism 渗透'
-```
-```text
-- id: prism-host
-  name: dsh-prism
-- id: preset-prism
-  name: '@deepseek-ai/dsh-agent-preset'
-    id: prism
-    name: Prism 渗透模式
-- id: preset-prism-worker
-  name: '@deepseek-ai/dsh-agent-preset'
-    id: prism-worker
-```
-
-启动后在**新建任务**的左下角预设选择器应出现 **「Prism 渗透模式」**（与选其它预设一样）。
-
-> ⚠️ **headless 模板 profile 的已知差异**：headless 没有 `agentPresets` / `webServer` 服务，会出现
-> `preset-prism ... pending (waiting for service: agentPresets)`。这是正常现象——请用含这些服务的
-> **web / desktop profile**（也就是你正常用的客户端）。
-
-### 3.4 常见安装问题：`ERR_PNPM_UNEXPECTED_STORE`
-
-现象（与 Prism 无关，装**任何**插件都会遇到）：
-```text
-The dependencies at "...\profiles\<profile>\node_modules" are currently linked from the store at
-"...\pnpm\store\v10". pnpm now wants to use the store at "...\pnpm\store\v11" ...
-```
-原因：该 profile 的 `node_modules` 是用**旧版 pnpm** 装的，而 DSH 运行时自带的 pnpm 已升级到新大版本，
-两个 store 目录格式不兼容，pnpm 拒绝在旧 store 上继续链接。
-
-修复（一次性，**需先完全退出 DSH Desktop**，再用外部终端操作该 profile）：
-```powershell
-cd C:\Users\<你>\.dsh\profiles\<profile>
-# 用与 DSH 同版本的 pnpm（本例 11.x）把依赖重链到新 store：
-& "C:\Users\<你>\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe" `
-  "<dsh-install>\resources\runtime\primary-runtime\dependencies\pnpm\bin\pnpm.mjs" install
-```
-完成后再打开 Desktop，用「插件面板」或 `dsh plugin add` 安装即恢复正常。
-若安装日志出现 `Ignored build scripts`，补跑一次 `... pnpm.mjs rebuild`。迁移前最好备份该 profile 的
-`package.json` / `pnpm-lock.yaml`，出问题可用系统旧版 pnpm 还原。
-
----
-
-## 4. 卸载
-
-图形界面：DSH Desktop →「插件」面板 → 找到 `dsh-prism` → 卸载（运行中宿主会热应用）。命令行等价：
-
-```bash
-dsh plugin --profile desktop remove dsh-prism
-```
-```text
-dependencies:
-- dsh-prism link:D:/.../dsh-prism
-Done in 610ms using pnpm v11.28.5
-```
-
-卸载后 `bundles` 自动回到 `["@deepseek-ai/dsh-base","@deepseek-ai/dsh-web-app"]`，`--dump-config` 中无任何 Prism 行。
-
-**数据不会被卸载删除**：`.prism/` 位于你的**工作目录**，与插件安装无关。要彻底清理某次 engagement，手动删除该项目下的 `.prism/`。
-
----
-
-## 4.5 界面：Prism 面板从哪进
-
-- **入口**：`conversation.view#prism` —— 与「对话 / 轨迹」**同一排**的会话页签（D27）。
-  打开 Prism 会话即出现在页签行，点击即进入面板，不再是右上角按钮 + 模态弹窗。
-- **面板**：页签内嵌，顶部一行 `origin · goal` + 实时/刷新，四格 KPI（事实 / 待办意图 /
-  在跑工兵 / 受阻），下面五个子页签：**图谱 / 前沿 / 工兵 / 证据 / 报告**，
-  全部只读 `.prism/`，每 4 秒刷新一次（仅在页签可见且页面处于前台时）。
-- **图谱**：同层 SVG，事实 / 意图 / 派单三列顶部对齐；边为贝塞尔曲线（结果边虚线）；
-  节点可点选、可键盘聚焦，悬停高亮相邻节点。
-- **已知代价**：该 slot 的注册项只有 `id/order/label`，**无法按会话隐藏**，
-  所以非 Prism 会话也会看到这个页签，点开是一句空态说明（README §8 第 10 条）。
-- 数据来自 `GET /prism/view?view=<name>&session=<id>`（同源只读，见 `src/host/webrow.ts`）；
-  该路由**只接受 session id，不接受任何路径参数**。
-
-## 5. 使用：装好后怎么打
-
-### 5.1 快速上手（5 分钟，渗透 / CTF）
-
-前提：只用**本机**做执行即可，**不需要 Docker / Kali**（本机模式默认开启；要连远程再配 §7 的 Kali）。
-
-1. **新建任务**，左下角预设选 **「Prism 渗透模式」**。
-2. **一句话把 目标 + 授权 + 想到哪一步 说清楚**，例如：
-   - CTF 靶机：`我获授权测试 CTF 靶机 192.0.2.20（http://192.0.2.20/），先做端口与服务侦察，再找可利用点。`
-   - 本机靶场：`对本地 DVWA 192.0.2.10:8080 做授权测试，admin/password 已知，先侦察再尝试登录。`
-3. 指挥官会自动 `prism_init`（把 **目标 / 动作 / 强度** 写进不可变 Mandate）→ `prism_reason` 出待办 →
-   `prism_spawn` 派工兵；工兵用 `prism_exec_start/output/stop` 真跑命令，再用 `prism_worker_report` 回报。
-4. 点开会话页签 **「Prism」** 看 图谱 / 前沿 / 工兵 / 证据 / 报告。任务在后台自动推进，你可以继续在
-   对话里发指令（纠偏 / 暂停 / 换方向），都会作为事件继续处理。
-
-> **授权级别（最关键）**：默认 `strength: read`，只够侦察。要做**写入 / 漏洞利用 / 拿 shell**，就在开头
-> 明确说“**允许 exploit / 写入**”，指挥官初始化 Mandate 时会带上相应 `actions` 与 `strength`（`write` / `exploit`）。
-> 范围建好后**只能收紧、不能放宽**；没授权到的目标 / 动作会被**执行前拒绝**（D29）。本插件默认**常驻预授权、
-> 不弹审批**（D28）；想恢复人工确认，把 preset 行的 `config.preAuthorized` 设为 `false`。
-
-> **断点续跑**：关掉再开也不丢——状态都在 `<工作目录>/.prism/`；重开后指挥官读 `prism_board` 续跑，中断的
-> 工兵可用 `prism_spawn ... resume_of` 接手。
-
-### 5.2 两种角色，两套工具面
-
-安装带来两个 preset，**工具面互斥**——隔离靠组合而非运行时开关：
-
-| | `prism`（Prism 渗透模式） | `prism-worker`（工兵） |
+| | `prism`（指挥官） | `prism-worker`（工兵） |
 |---|---|---|
-| 角色 | 指挥官 | 执行者 |
-| 工具 | `prism_board` `prism_init` `prism_reason` `prism_hint` `prism_spawn` `prism_peek` `prism_msg` `prism_kill` `prism_verify` `prism_capabilities` `prism_tighten` | `prism_worker_report` `prism_exec_start` `prism_exec_output` `prism_exec_stop` `prism_run` + 宿主 bash/pwsh/fs/fs-search |
-| **没有** | shell / fs / web / MCP —— 一个执行工具都没有 | ask-user / goal / todo / subagent —— 不能自己派单、不能向用户提问 |
-| 强制 | `tools.guard()` 在执行前二次拦截任何执行类工具 | 无绑定 Assignment 时任何执行直接拒绝 |
+| 控制工具 | `prism_board` `prism_init` `prism_reason` `prism_hint` `prism_spawn` `prism_peek` `prism_msg` `prism_kill` `prism_verify` `prism_effect_resolve` `prism_capabilities` `prism_tighten` | ❌ |
+| 回报工具 | ❌ | `prism_worker_report` `prism_evidence_add` |
+| 执行工具 | ❌（不挂 shell/fs/web/MCP） | `prism_exec_start` `prism_exec_output` `prism_exec_stop` `prism_run` + 宿主 bash/pwsh/fs/fs-search |
+| 交互 | 与用户对话 | 不向用户提问，用结构化 Report 交给指挥官 |
 
-### 5.3 典型推进流程（内部机制，无需手动）
-```text
-prism_init            # 建立 engagement 并铸造 Mandate（模型无法自己提权；范围写进凭证）
-prism_reason          # 读事实 → 写出候选 Intent
-prism_spawn           # 派单给工兵（立即返回，不阻塞）；接班时带 resume_of
-  └─ worker: prism_exec_start → prism_exec_output(游标轮询) → prism_exec_stop
-  └─ worker: prism_worker_report  # 结构化回报：progress/waiting/ready/blocked/failed
-prism_board           # 事实回图后看 frontier
-prism_msg / prism_kill# 纠偏 / 止损；接班的 assignment 会记 resume_of
-prism_verify          # 可选：独立复核
-```
+强制有两层：**组合层**（不同 preset 挂不同插件行）+ **运行时 `tools.guard()`**（执行前再拦截一次执行类工具）；工兵无绑定 Assignment 时任何执行直接拒绝。
 
----
+### 3.4 运行时与事件
 
-## 6. 恢复语义
+控制面集中在 `src/host/runtime.ts`（`PrismRuntime`），通过三个可注入的缝与宿主解耦：派单/通讯（`NativeOps`）、唤醒指挥官（`WakeHooks.followup`）、审批（`ApprovalBroker`，缺失时 fail-closed）。
 
-`.prism/` 是唯一权威存储（一文件一节点，原子写：临时文件 → fsync → rename），重启后不依赖旧聊天：
+事件驱动，**无定时器、无固定轮询**：`src/index.ts` 只挂 `subagent/end` 监听；`runtime/fastpath.ts` 对每条入站事件给出五选一出口——`duplicate`（去重键已存在，仍留痕但不路由）/ `filtered`（空体/自身事件）/ `route-assignment`（直接投递给绑定的工兵，不打扰指挥官）/ `coalesced`（冷却窗内合并）/ `wake`（`agent.followup` 唤醒指挥官）。
 
-| 崩溃时的状态 | 恢复后 | 能否自动继续 |
-|---|---|---|
-| `Assignment.status = running` | → `interrupted`，并计入 `resumable` | ✅ 可续：`prism_spawn` 带 `resume_of` 派一个新 assignment |
-| `Effect.status = pending` | 保留在 outbox | ✅ 下次 `drain()` 执行 |
-| `Effect.status = unknown`（结果不明） | 进 `review_required` | ❌ **禁止自动重放**，必须人工核查 |
-| `Effect.status = failed`（幂等执行器抛错） | 保持 `failed` | ❌ 需显式 `retry()` |
+### 3.5 执行后端
 
-**意图只在 `ready` 且带事实时关闭**：`failed` / `cancelled` 的终态回报会释放 claim，让意图回到
-frontier 重新派单——失败不是结果（D30）。
+统一接口 `ExecutionBackend`：`healthCheck() / start() / output() / stop()`，全异步。
 
-**同一 `dedupe_key` 的事件只会路由一次**：重复入站仍持久化（留痕），但不会重复派单。
+- **LocalBackend**：Windows `cmd.exe`，512KB 环形输出缓冲，`taskkill /T /F` 杀整棵进程树，`output()` 按字节游标增量返回。
+- **KaliBackend**：经系统 **OpenSSH** 客户端（`BatchMode=yes`、`StrictHostKeyChecking` 可配），未配置或连不上时 `verified:false` 并返回 ssh 自身诊断，`start()` 直接抛错——**绝不返回模拟成功**。
 
----
+### 3.6 只读 UI 与面板
 
-## 7. 授权与安全
+- **数据通道**：`GET /prism/view?view=<board|graph|frontier|workers|evidence|report>&session=<id>`，同源只读。**只接受 session id，不接受任何路径参数**；cwd 由宿主 session 解析后拼 `.prism/`。普通会话即使目录里有 `.prism/` 也会返回 `present:false`（双重门禁：engagement 存在 ∧ 该会话预设是 `prism`）。
+- **面板**：`client/prism-client.js` 注册 `conversation.view#prism` —— 与「对话 / 轨迹」同排的会话页签。顶部 `origin · goal` + KPI，下面五个子页签：**图谱 / 前沿 / 工兵 / 证据 / 报告**，全部只读 `.prism/`，页签可见时每 4 秒刷新。
+- **图谱**：同层 SVG，三列（事实 / 意图 / 派单），边为贝塞尔曲线（结果边虚线），节点可点选/键盘聚焦/悬停高亮相邻。报告、执行、证据的数量在标题行动态显示，不逐条画成节点。
 
-- **Mandate 不可变**：`{ scope: { targets[], actions[], backends[] }, strength: 'read'|'confirm'|'write'|'exploit' }`。撤销写独立的 `mandate_revocations/` 记录，并把受影响的活动 Assignment 置 `paused`。
-- **模型不能文本提权**：范围/目标/后端/强度全部在 `PrismEngine.authorize()` 里判定，提示词怎么写都越不过去。
-  `execStart` 会在启动前从命令行解析端点（URL host / IPv4 / CIDR / `user@host`）并逐个比对 targets，
-  越界即拒绝，进程不会启动（D29）。
-- **默认拒绝**：`classifyCommand()` 把未知命令一律归为 `requires_confirm: true`；无审批通道时 `denyAllApprovals` 一律拒绝（fail-closed）。
-- **凭据脱敏**：进程输出与投影结果返回前经 `redactSecrets()`。
-- **目标内容是数据不是指令**：注入给 worker/指挥官时用 `<<UNTRUSTED_DATA>> ... <<END_UNTRUSTED_DATA>>` 包裹，并转义伪造的闭合标记、剥离控制字符与 bidi 覆盖、HTML 转义。
+### 3.7 前沿（Frontier）：图的工作队列
 
-### Kali / 远程执行（可选，默认关闭）
+"前沿"不是一块独立存储，也不是一个动作，而是**对整张意图图做一次纯函数分类**得到的工作队列——它回答"现在图的前沿上，哪些活能做、哪些在做、哪些被卡住、哪些已完成"。指挥官每步用 `prism_board` 读到的 `frontier`，和面板的「前沿」页签，是**同一份数据**（`GET /prism/view?view=frontier` 直接返回 `board.frontier`）。
 
-未配置远程完全不影响本机模式与启动。配置了但连不上，`healthCheck()` 返回 `verified: false`
-并带上 ssh 自己的诊断，`start()` 出来的 handle 在 `output()` 里落 `status:"failed"`——
-**绝不返回模拟成功**。
+| 桶 | 判定（全部由结构推导，见 `src/graph/frontier.ts`） |
+|---|---|
+| `done` | 已闭环（`to !== null`） |
+| `running` | 开放且已被某个 assignment 认领（`claimed_by !== null`） |
+| `ready` / `available` | 开放、未被认领、`from` 引用的**事实全部存在**、且（无需确认或已批准）——即"现在就能派单" |
+| `blocked` | 开放但不可做：前置事实缺失，或需要确认但还没批准 |
 
-远程通道用**系统 OpenSSH 客户端**（`src/exec/ssh.ts`，零运行时依赖）：
-
-- `BatchMode=yes`（不弹密码）、`StrictHostKeyChecking=yes`（仅 lab VM 可显式关）；
-- 目的地与命令是两个独立 argv，`--` 结束选项解析，host/user 过白名单正则 —— 主机名无法变成 ssh 选项；
-- 超时 `SIGKILL`，退出码记 `null`；`stop()` 只标状态，不 kill 远端进程（已知边界）。
-
-配置写在 preset 行的 `config.kali`（`src/host/config.ts` 防御式解析，缺 `host` 即不启用）：
-
-```yaml
-- id: prism-worker          # commander 行（presets/prism.patch.yml）同形
-  name: 'dsh-prism/worker'
-  config:
-    kali:
-      host: 192.0.2.10
-      user: user
-      identityFile: C:/Users/you/.ssh/id_ed25519   # 方案A：密钥文件路径（不是内容）
-      # identityRef: cred://lab-ssh-key           # 方案B：宿主 ctx.credentials 引用（推荐，不落盘）
-      connectTimeoutSec: 8                         # 1–600
-      strictHostKeyChecking: false                 # 仅 lab VM
-```
-
-真实往返证据见 `docs/evidence/p7-kali.md`（`verified:true`、`nmap` 真输出、`exit=127`、不可达 `exit=255`）。
-⚠️ 验证主机是 **Ubuntu 22.04**，不是 Kali 镜像。身份认证两种方式：`identityFile`（你填密钥**路径**）或
-`identityRef`（走宿主 `ctx.credentials` 引用，D35：每次调用解析、临时 0600 密钥、用完即删、解析失败即拒绝连接、绝不回退密码）。
+定位上它是**只读推导**：不落盘、不可写、无镜像状态。它取代了"给每个 intent 维护一个 status 字段"的做法——状态永远由图结构（from 事实是否齐、是否被认领、是否已闭环）当场算出。指挥官据此决定"下一步 spawn 哪个 intent"，人工在「前沿」页签看到的就是这个边界；`ready` 与 `available` 内容相同，前者用于语义表达、后者强调"可立即派单"。
 
 ---
 
-## 8. 未实现 / 未验证清单
-
-> 按诚实原则，以下项**没有被写成已完成**。已经闭环的项从本清单移除，但证据留在
-> `docs/evidence/`：面板像素（`p8-ui.md` §8）、`application: applied` 与覆盖安装（`p9-applied.md`）、
-> SSH 真实联通（`p7-kali.md`）、**模型驱动的跨进程派单**（`lab-run.md`）、
-> **targets 对实际命令的约束 / 执行记录含命令 / 事实去重 / 接班**（D29–D31，审计轮）、
-> **unknown 结案工具 / 事件边界护栏 / Watchdog 类型屏障 / 凭据引用 / 跨版本升级**（D32–D36，续作轮 v3）都已销项。
-
-1. **⚠️ 命令里解析不出端点时不做目标校验。** `targetsInCommand()` 只认 URL host、IPv4/CIDR 和
-   `user@host`；`whoami`、`cat /etc/passwd` 这类本机命令不产生端点，因此不会被目标列表拦住
-   （拦住它们的是 `actions`，不是 `targets`）。这是 D29 明说的残余边界。
-2. **⚠️ 回环地址恒在范围内。** `127.0.0.1` / `localhost` / `::1` / `0.0.0.0` 视为本机，不受 targets 约束；
-   如果目标是通过本机代理/端口转发访问的，targets 拦不住。
-3. **⚠️ 事实去重只认完全相同的 `title+summary`。** 换个说法的同一结论仍会产生新 fact（D30）。
-4. **⚠️ 多进程同时写同一 `.prism/` 不支持**（D26 的后果）：同一进程内靠"每 root 只恢复一次"兜住，
-   跨进程没有租约。
-5. **⚠️ Kali 镜像本体未实测**。SSH 通道已在 Ubuntu 上真机验证（D23），`identityRef` 引用也已打通（D35），
-   但目标机是不是 Kali 未测。
-6. **⚠️ Linux / macOS 本机执行后端未实测**（仅 Windows 路径验证）。
-7. **⚠️ 五视图的数据通道不是 `@Remote`**。用的是同源只读 HTTP 路由（typert codegen 只在 DSH monorepo 的 `build:lib` 里）。视图契约独立于通道，将来可平移（D22）。
-8. **⚠️ 客户端 bundle 为手写纯 JS，无类型检查**。有 13 项契约测试，但没有 TS 类型约束。
-9. **⚠️ `config.kali` 必须写在 preset patch 行里**，等于复制一份 bundle 改配置；尚未做成用户级设置项。
-10. **⚠️ 普通会话也会看到「Prism」页签。** `conversation.view` 的注册项只有 `id/order/label`，
-    无法按会话隐藏，所以非 prism 会话点开是一句空态说明。这是 D27 里明说的代价：换成入口在用户
-    预期位置、面板不再是模态弹窗。宿主若给该 slot 加上按会话过滤，这条应消失。
-11. **⚠️ 默认不弹审批。** 因为插件只用于**已确定授权**的任务（D28）。范围检查（actions / backends /
-    目标 / assignment 状态）一条都没少，但如果你要在别人的环境里用，请先在 preset 行设
-    `config.preAuthorized: false` 把人工闸门开回来。
-12. **⚠️ 真实凭据服务连远端未单独跑。** `identityRef` 的解析/临时密钥/fail-closed 由单测覆盖（D35），
-    真机复验用的是免交互 ssh（key 已在 `~/.ssh`），未接宿主 `credentials` 服务连一次远端。
-13. **⚠️ 打包安装（非 pnpm link）的文件级清理未验证。** DSH 本地安装用 `link:`，没有"旧版本文件副本"
-    可清理；若将来发布到 npm 走真实打包安装，需要单独验证升级/卸载的文件级 diff。
-
-## 9. 数据模型速查
+## 4. 一次任务如何流转
 
 ```text
-<cwd>/.prism/
-├── project.json          # { id:'proj', schema_version, origin, authorization, goal, status, counters{12 类}, ... }
+用户：新建任务 → 选「Prism 渗透模式」→ 说清 目标 / 授权 / 想到哪一步
+  │
+指挥官 prism_init       建立 engagement，铸造不可变 Mandate（目标·动作·强度·后端）
+指挥官 prism_reason     读事实 → 写候选 Intent（from 引用已有事实）
+指挥官 prism_spawn      派单给工兵（异步返回；接班带 resume_of）
+  └─ 工兵 prism_exec_start → prism_exec_output(游标) → prism_exec_stop   经 ExecutionBackend 真跑
+  └─ 工兵 prism_worker_report  结构化回报 progress/waiting/ready/blocked/failed + facts + evidence
+指挥官 prism_board      事实回图 → frontier 更新 → 决策下一轮
+  （纠偏 prism_msg / 止损 prism_kill / 复核 prism_verify / 副作用 prism_effect_resolve）
+```
+
+**关键语义**：
+
+- **意图只在 `ready` 且带事实时关闭**；`failed / cancelled` 的终态回报会释放 claim，让意图回到 frontier 重新派单——失败不是结果。
+- **同一 `dedupe_key` 的事件只路由一次**：重复入站仍持久化留痕，但不会重复派单。
+- **断点恢复**：崩溃时 `running` 的 Assignment 重启后标 `interrupted`（计入可续，用 `prism_spawn ... resume_of` 接手）；`pending` 副作用留在 outbox 待 drain；**`unknown` 副作用禁止自动重放**，必须人工核查。
+
+---
+
+## 5. 数据模型（`.prism/`）
+
+位置：**会话工作目录**下的 `<cwd>/.prism/`，一文件一节点，原子写（临时文件 → fsync → rename）+ 跨平台目录锁 + zod 校验。
+
+```text
+.prism/
+├── project.json          # { id:'proj', schema_version, origin, authorization, goal, status, counters{...} }
 ├── facts/{goal,fNNN}.json        # 不可变
 ├── intents/iNNN.json             # { description, from[], to|null, confirm, approved, claimed_by, backend, stop_condition }
-├── mandates/mNNN.json            # 不可变
+├── mandates/mNNN.json            # 不可变授权凭证
 ├── mandate_revocations/mdNNN.json
 ├── assignments/aNNN.json         # { intent_id, mandate_id, backend, worker_session, status, attempts, resume_of }
 ├── reports/rNNN.json             # { assignment_id, kind, text, facts[], evidence[] }
 ├── events/vNNN.json              # { source, dedupe_key, owner_session, status, filter_reason }
-├── effects/xNNN.json             # Outbox: { kind, payload, status:'pending'|'done'|'failed'|'unknown', idempotent }
+├── effects/xNNN.json             # Outbox：{ kind, payload, status, attempts, idempotent }
 ├── executions/xNNN.json          # { assignment_id, job_ref, command, status, output_cursor, side_effect, result }
-├── hints/ workers/ messages/ evidence/
+├── hints/  workers/  messages/  evidence/
 ```
 
-- `frontier` 判定：`ready ⟺ 开放 ∧ from 事实全存在 ∧ 未待确认 ∧ 未被 claim`——**状态完全由图结构推导**，无冗余 status 镜像。
-- `schema_version` 由 `src/domain/migrate.ts` 显式升版，旧 `project.json` 自动补齐且幂等。
+- **前沿（frontier）判定**（`src/graph/frontier.ts`）：`done`=已闭环；`running`=开放且被认领；`ready/available`=开放∧未被认领∧`from` 事实全存在∧（无需确认或已批准）；`blocked`=其余（缺前置事实或待确认）。状态完全由图结构推导，**不设冗余 status 镜像**（Assignment / Execution 例外：它们本就记录执行尝试状态）。
+- **不可变**：fact、mandate 同 ID 二次写被拒绝；"更正" = 新节点 + 关系。
+- **引用完整性**：`from / to / evidence / claimed_by / mandate_id / assignment_id / intent_id` 必须指向存在实体。
+- **schema 迁移**：`project.json` 带 `schema_version`，旧版本经 `src/domain/migrate.ts` 显式升级后再校验。
 
 ---
 
-## 10. 开发
+## 6. 安装
+
+本插件以**本地 bundle** 交付（`0.1.0`，`private`，未发布到 npm/市场）。安装方式与其它 DSH 插件相同，只是“来源”填本目录的**绝对路径**。装好后不需要手改任何配置。
+
+### 6.1 图形界面（推荐）
+
+DSH Desktop →「插件」面板 →「安装 / 添加 bundle」→ 来源填本目录绝对路径（如 `<path-to-dsh-prism>`）→ 返回 `application: "applied"` 即完成，运行中即时生效。
+
+### 6.2 命令行（等价）
 
 ```bash
-npx tsc -p tsconfig.json --noEmit    # 类型检查
-npx tsc -p tsconfig.json             # 构建 lib/
-npx vitest run                       # 全量：26 files / 245 tests
-npx vitest run tests/host            # 单目录
+dsh plugin --profile desktop add "<path-to-dsh-prism>"
 ```
 
-约束：TS ESM（相对导入必须带 `.js`）、两空格单引号无分号、**不 import 任何 `@deepseek-ai/*`**、`src/x/y.ts ↔ tests/x/y.spec.ts` 镜像。
+### 6.3 验证
+
+启动后在**新建任务**的左下角预设选择器里应出现 **「Prism 渗透模式」**；或核对组合配置：
+
+```bash
+dsh --profile desktop --dump-config | Select-String -Pattern 'prism-host|prism-web|preset-prism|Prism 渗透'
+```
+
+### 6.4 常见问题
+
+- **已装过再装**返回 `already-installed`：**覆盖安装要先卸载再装**。
+- **`ERR_PNPM_UNEXPECTED_STORE`**：profile 的 `node_modules` 是旧版 pnpm 链的，与 DSH 自带 pnpm 的新 store 不兼容（装任何插件都可能遇到，与 Prism 无关）。**完全退出 DSH** 后，在外部终端用与 DSH 同版本的 pnpm 对该 profile 跑一次 `install` 重链即可。
+- **headless / ACP profile** 会出现 `preset-prism ... pending (waiting for service: agentPresets)`：这是正常现象，请用带 `agentPresets` / `webServer` 的 **web / desktop profile**（也就是正常客户端）。
+
+### 6.5 卸载
+
+插件面板卸载，或 `dsh plugin --profile desktop remove dsh-prism`。**数据不会被删**：`.prism/` 在会话工作目录里，与插件安装无关；要彻底清理某次 engagement，手动删除该目录下的 `.prism/`。
 
 ---
 
-## 11. 文档
+## 7. 使用
+
+### 7.1 快速上手
+
+1. **新建任务**，左下角预设选 **「Prism 渗透模式」**。
+2. **一句话说清 目标 + 授权 + 想到哪一步**，例如：
+   - `我获授权测试 CTF 靶机 192.0.2.20（http://192.0.2.20/），先做端口与服务侦察，再找可利用点。`
+   - `对本地 DVWA 192.0.2.10:8080 做授权测试，admin/password 已知，先侦察再尝试登录。`
+3. 之后指挥官会自动初始化、出待办、派工兵；任务在后台推进，你可以在对话里继续纠偏/暂停/换方向。
+4. 点开会话页签 **「Prism」** 看 图谱 / 前沿 / 工兵 / 证据 / 报告。
+
+> **授权级别最关键**：默认 `strength: read`，只够侦察。需要**写入 / 漏洞利用 / 拿 shell**，请一开始就明确说"**允许 exploit / 写入**"，指挥官初始化 Mandate 时会带上相应 `actions` 与 `strength`。范围建好后**只能收紧、不能放宽**，未授权目标/动作会在**执行前**被拒绝。
+
+### 7.2 恢复
+
+关掉再开不丢：状态都在 `<工作目录>/.prism/`。重开后指挥官读 `prism_board` 续跑，被中断的工兵可用 `prism_spawn ... resume_of` 接手。
+
+---
+
+## 8. 配置
+
+所有配置写在**对应 preset 行**的 `config` 里（装好后无需改）。
+
+### 8.1 Kali / 远程执行（可选，默认不启用）
+
+不配置就纯本机运行；配置了但连不上会 `verified:false` 并返回 ssh 诊断，不会伪造成功。
+
+```yaml
+# presets/prism-worker.patch.yml 的 prism-worker 行
+config:
+  kali:
+    host: 192.0.2.10
+    user: user
+    identityFile: C:/Users/you/.ssh/id_ed25519   # 方式A：密钥文件路径
+    # identityRef: cred://lab-ssh-key            # 方式B（推荐）：走宿主 ctx.credentials 引用，不落盘
+    connectTimeoutSec: 8                          # 1–600
+    strictHostKeyChecking: false                  # 仅 lab 虚拟机可关
+```
+
+### 8.2 审批开关
+
+默认 `preAuthorized: true`（常驻预授权、不弹审批，面向**已确定授权**的任务）。范围检查一条都没少；如果你在别人的环境里用，请设 `config.preAuthorized: false` 把人工闸门开回来。
+
+---
+
+## 9. 安全与授权
+
+- **模型不能文本提权**：目标/动作/后端/强度全部在 `PrismEngine.authorize()` 里判定；`execStart` 会在启动前**从命令行解析端点**（URL host / IPv4 / CIDR / `user@host`）逐个比对 targets，越界即拒绝，进程不启动。
+- **默认拒绝**：未知命令一律 `requires_confirm`；无审批通道时一律拒绝（fail-closed）。
+- **授权收紧即暂停**：撤销或缩小范围时，立即 `paused` 受影响的 Assignment。
+- **凭据不落盘**：只经宿主 `ctx.credentials` 引用；秘密值不进 prompt/fact/evidence/日志/UI。进程输出与投影在返回前经 `redactSecrets()`。
+- **目标内容是数据不是指令**：注入 commander/worker 时用 `<<UNTRUSTED_DATA>> … <<END_UNTRUSTED_DATA>>` 包裹，转义伪造闭合标记、剥离控制字符与 bidi 覆盖。
+
+---
+
+## 10. 已知边界
+
+以下是**尚未实现或未验证**的项，如实列出（不包装成"已完成"）：
+
+1. **命令解析不出端点时不做目标校验**：`whoami`、`cat /etc/passwd` 这类不产生端点，拦住它们的是 `actions` 而非 `targets`。
+2. **回环地址恒在范围内**：`127.0.0.1 / localhost / ::1 / 0.0.0.0` 视为本机，不受 targets 约束。
+3. **事实去重只认完全相同的 `title+summary`**：换个说法说同一结论仍会产生新 fact。
+4. **同一 `.prism/` 不支持多进程并发写**：同进程内靠"每 root 只恢复一次"兜住，跨进程无租约。
+5. **Kali 镜像本体未实测**：SSH 通道已在 Ubuntu 上真机验证，但目标机是否是 Kali 未测。
+6. **Linux / macOS 本机执行后端未实测**（仅 Windows 路径验证）。
+7. **非 Prism 会话也会看到「Prism」页签**：`conversation.view` 的注册项无法按会话隐藏，点开是一句空态说明。
+8. **客户端为手写纯 JS、无类型检查**：有契约测试，但没有 TS 类型约束。
+
+---
+
+## 11. 设计取舍：与最初设想的关系
+
+**结论：核心设想没有偏离，落地的都是同一套设计；偏离集中在"怎么接到宿主"这类实现层，且都有记录。**
+
+最初设想（`docs/SPEC.md` 为单一事实源）：可安装 bundle → 「Prism 渗透模式」；面向**单个授权 engagement**；**指挥官经 Fact–Intent 图指挥可替换 worker**；事件驱动自动推进、可恢复；`.prism/` 为领域权威存储；`PrismEngine` 唯一写者；不可变 Mandate 做硬授权；角色工具面结构性互斥；Remote 五视图只读投影；Windows 本机 + 可选 Kali。这些**全部保留并实现**。
+
+实现层相对早期设计稿的偏离（详见 `docs/PLAN.md`「实际落地对照」与 `docs/DECISIONS.md`）：
+
+| 项 | 早期设想 | 实际做法 | 原因 |
+|---|---|---|---|
+| 预设声明 | 独立 `preset/<id>/` 目录 | `@deepseek-ai/dsh-agent-preset` 的 patch 行 | 贴合当前宿主的预设法 |
+| 派生子代理 | 自建 `subagents.registerProvider` | 复用宿主 `subagents.startActivation` | 零运行时依赖约束，无法 import 宿主包 |
+| UI 数据通道 | `@Remote` + typert codegen | 同源只读 HTTP 路由（`/prism/view`） | codegen 只在宿主 monorepo 构建期有；视图契约独立，将来可平移 |
+| 面板入口 | 右上角按钮 + 模态弹窗 | `conversation.view#prism` 会话页签 | 入口更符合预期；代价是无法按会话隐藏（见边界 7） |
+| 推进机制 | 专门的 loop 模块 | 事件 fast-path（无定时器/轮询） | 用事件本身保证"无任务休眠"，更简单可靠 |
+
+这些都不是"产品范围变了"，而是**在当前宿主接口下，用更小、更稳的接法实现同一个设计**。
+
+---
+
+## 12. 开发
+
+```bash
+npm run typecheck     # tsc --noEmit
+npm run build         # 构建 lib/
+npm test              # vitest run
+npm run verify        # typecheck + build + test
+```
+
+- 需要 **Node ≥ 20**（构建/测试用；运行由 DSH 宿主提供运行时）。注意 `vitest@4` 在 **Node 21 上启动即崩**（`util.styleText`），请用 Node 22 或 24。
+- 代码约束：TypeScript ESM（相对导入带 `.js`）、两空格单引号无分号、不 import 任何 `@deepseek-ai/*`、`src/x/y.ts ↔ tests/x/y.spec.ts` 镜像。
+
+---
+
+## 13. 文档
 
 | 文件 | 内容 |
 |---|---|
-| `docs/SPEC.md` | 单一事实源（产品边界 / 领域模型 / 验收） |
-| `docs/ARCHITECTURE.md` | 实际模块布局、数据模型、运行时、执行后端、投影 |
-| `docs/DECISIONS.md` | ADR D1–D36（含 D16 零依赖、D17 预设走 patch 行、D20→D22 UI 落地、D21→D23 `applied` 销项、D23 SSH transport、D24 模板变量封闭集、D29–D31 审计轮、D32–D36 续作轮 v3） |
-| `docs/PLAN.md` | P0–P9 计划 + **实际落地对照**（逐条标注偏离） |
-| `docs/ACCEPTANCE.md` | A1–A14 / N1–N9 逐项状态与证据映射 |
-| `docs/STATUS.md` | 活状态板（接手先读） |
-| `docs/DEVLOG.md` | 追加式时间线（含 RED 证据与事故复盘） |
-| `docs/MECHANISMS.md` | 机制说明 |
-| `docs/evidence/` | 真实命令 + 退出码 + 输出摘要 |
+| `docs/SPEC.md` | 产品目标、边界、域模型、验收的单一事实源 |
+| `docs/ARCHITECTURE.md` | 已落地的模块布局、数据模型、运行时、执行后端、投影 |
+| `docs/DECISIONS.md` | 关键设计决策记录（ADR） |
+| `docs/PLAN.md` | 计划与「实际落地对照」（逐条标注偏离） |
+| `docs/ACCEPTANCE.md` | 验收项与证据映射 |
