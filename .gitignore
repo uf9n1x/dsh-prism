@@ -17,6 +17,7 @@ coverage/
 Thumbs.db
 
 # internal / process artifacts — kept locally, never committed
+.devdocs/
 .workbuddy/
 .ai-memory/
 PRISM_CONTINUE_PROMPT.md

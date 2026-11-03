@@ -74,18 +74,17 @@ describe('bundle manifest', () => {
     expect(web?.inject).toEqual(['webServer'])
   })
 
-  it('keeps the governed docs present (single source of truth)', () => {
+  it('keeps the public docs present and linked from the README', () => {
+    const readme = readFileSync(join(root, 'README.md'), 'utf8')
     for (const f of [
-      'docs/SPEC.md',
-      'docs/DECISIONS.md',
-      'docs/MECHANISMS.md',
-      'docs/PLAN.md',
-      'docs/ARCHITECTURE.md',
-      'docs/ACCEPTANCE.md',
-      'docs/STATUS.md',
-      'docs/DEVLOG.md'
+      'docs/architecture.md',
+      'docs/data-model.md',
+      'docs/security.md',
+      'docs/usage.md',
+      'docs/known-limits.md'
     ]) {
       expect(existsSync(join(root, f)), `missing ${f}`).toBe(true)
+      expect(readme, `README does not link ${f}`).toContain(f)
     }
   })
 })
