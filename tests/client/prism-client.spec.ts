@@ -61,6 +61,38 @@ function loadClient(options: { locale?: string; fetch?: unknown } = {}): Loaded 
   return { id: (captured as { id: string }).id, plugin: (captured as { plugin: any }).plugin, renders }
 }
 
+interface Registration {
+  name: string
+  id: string
+  order?: number
+  label?: string | (() => string)
+}
+
+function applyAndCollect(): { registered: Registration[]; injected: string[]; components: Map<string, any> } {
+  const loaded = loadClient()
+  const registered: Registration[] = []
+  const injected: string[] = []
+  const components = new Map<string, any>()
+  const ctx = {
+    slots: {
+      inject(owner: string, install: () => unknown) {
+        injected.push(owner)
+        install()
+      },
+      register(options: Registration, component: any) {
+        registered.push(options)
+        components.set(`${options.name}#${options.id}`, component)
+        return () => undefined
+      }
+    }
+  }
+  loaded.plugin.apply(ctx)
+  return { registered, injected, components }
+}
+
+/** Any key resolves to its own name, so a missing copy key never crashes a render. */
+const anyCopy = new Proxy({}, { get: (_target, key) => String(key) }) as Record<string, string>
+
 describe('P8 client bundle contract', () => {
   it('registers a lazy factory whose id equals the package name', () => {
     expect(loadClient().id).toBe(pkg.name)
@@ -81,78 +113,74 @@ describe('P8 client bundle contract', () => {
     expect(existsSync(clientPath)).toBe(true)
   })
 
-  it('injects slots and registers exactly two entries: a header utility and an overlay', () => {
-    const loaded = loadClient()
-    expect(loaded.plugin.inject).toEqual(['slots'])
-
-    const registered: { name: string; id: string; order?: number }[] = []
-    const injected: string[] = []
-    const ctx = {
-      slots: {
-        inject(owner: string, install: () => unknown) {
-          injected.push(owner)
-          install()
-        },
-        register(options: { name: string; id: string; order?: number }, _component: unknown) {
-          registered.push(options)
-          return () => undefined
-        }
-      }
-    }
-    loaded.plugin.apply(ctx)
-
-    expect(injected).toEqual(['conversation.session.header.utilities', 'shell.overlay'])
-    expect(registered.map((entry) => `${entry.name}#${entry.id}`)).toEqual([
-      'conversation.session.header.utilities#prism-engagement',
-      'shell.overlay#prism-panel'
-    ])
+  it('registers exactly one entry: the conversation view beside 对话/轨迹', () => {
+    const { registered, injected } = applyAndCollect()
+    expect(injected).toEqual(['conversation.view'])
+    expect(registered.map((entry) => `${entry.name}#${entry.id}`)).toEqual(['conversation.view#prism'])
+    expect(registered[0]!.order).toBe(100)
   })
 
-  it('does NOT register conversation.view, so ordinary sessions gain no tab', () => {
-    const loaded = loadClient()
-    const names: string[] = []
-    const ctx = {
-      slots: {
-        inject: (_owner: string, install: () => unknown) => install(),
-        register: (options: { name: string }) => {
-          names.push(options.name)
-          return () => undefined
-        }
-      }
-    }
-    loaded.plugin.apply(ctx)
-    expect(names).not.toContain('conversation.view')
+  it('labels the tab by thunk so it follows the active locale', () => {
+    const { registered } = applyAndCollect()
+    const label = registered[0]!.label
+    expect(typeof label).toBe('function')
+    expect((label as () => string)()).toBe('Prism')
   })
 
-  it('renders the header utility as nothing when the session has no engagement', () => {
-    const loaded = loadClient()
-    let headerComponent: ((props: any) => unknown) | null = null
-    let overlayComponent: (() => unknown) | null = null
-    const ctx = {
-      slots: {
-        inject: (_owner: string, install: () => unknown) => install(),
-        register: (options: { name: string }, component: any) => {
-          if (options.name === 'conversation.session.header.utilities') headerComponent = component
-          else overlayComponent = component
-          return () => undefined
-        }
-      }
-    }
-    loaded.plugin.apply(ctx)
-    expect(headerComponent).not.toBeNull()
-    expect(overlayComponent).not.toBeNull()
+  it('no longer registers a header utility or a shell overlay', () => {
+    const { registered, injected } = applyAndCollect()
+    const names = registered.map((entry) => entry.name)
+    // The old surface lived in the top-right corner and was easy to miss; the
+    // tab row is the host's own place for a per-session view.
+    expect(names).not.toContain('conversation.session.header.utilities')
+    expect(names).not.toContain('shell.overlay')
+    expect(injected).not.toContain('shell.overlay')
+  })
 
-    // useState starts at 'absent' for a missing session, and the component must
-    // return null rather than an element: a null utility adds no chrome at all.
-    const wrapper = (headerComponent as (props: any) => any)({ sessionId: undefined })
-    expect(wrapper).not.toBeNull()
-    expect(wrapper.type(wrapper.props)).toBeNull()
+  it('says it is still loading, not "no session", before the host binds a session id', () => {
+    const { components } = applyAndCollect()
+    const component = components.get('conversation.view#prism')!
+    const wrapper = component({ sessionId: undefined, t: anyCopy })
+    // The slot registers a thin wrapper that closes over the locale copy; the
+    // view itself is its child.
+    const element = wrapper.type(wrapper.props)
+    expect(element).not.toBeNull()
+    expect(element.props.className).toBe('prism-absent')
+    const hint = element.props.children[0]
+    expect(hint.props.className).toBe('prism-absent-hint')
+    // No engagement is claimed and no "no session selected" is asserted: on a
+    // switch this state lasts a frame and the honest word is "loading".
+    // The copy comes from the plugin's own table (the wrapper closes over it),
+    // so assert the meaning rather than a literal: it must talk about reading.
+    expect(String(hint.props.children[0])).toContain('.prism')
+  })
 
-    // The overlay entry is a thin wrapper; the panel itself renders nothing
-    // while closed, so the wrapper contributes no chrome either.
-    const overlayElement = (overlayComponent as () => any)()
-    expect(overlayElement).not.toBeNull()
-    expect(overlayElement.type(overlayElement.props)).toBeNull()
+  it('renders the shell for a session before the first payload arrives', () => {
+    const { components } = applyAndCollect()
+    const component = components.get('conversation.view#prism')!
+    const wrapper = component({ sessionId: 'session-1', t: anyCopy })
+    const element = wrapper.type(wrapper.props)
+    expect(element.props.className).toBe('prism-root')
+    // Nothing is claimed about the engagement until the board answers.
+    expect(element.props.children[0].props.className).toBe('prism-top')
+  })
+
+  it('draws the graph as SVG rather than a table', () => {
+    const source = readFileSync(clientPath, 'utf8')
+    expect(source).toMatch(/h\(\s*'svg'/)
+    expect(source).toContain('viewBox')
+    expect(source).toContain('className: \'prism-node\'')
+    // Fact → intent use solid edges, intent → result use dashed ones.
+    expect(source).toContain('strokeDasharray')
+    expect(source).toContain('layoutGraph')
+  })
+
+  it('pairs every status colour with a text label', () => {
+    const source = readFileSync(clientPath, 'utf8')
+    // STATE_COLOR is a lookup, and the chip that consumes it always renders the
+    // state name next to the dot — colour is never the only signal.
+    expect(source).toContain('function StateChip')
+    expect(source).toMatch(/props\.label \?\? props\.state/)
   })
 
   it('builds relative view requests so no host origin is hard-coded', () => {
@@ -166,5 +194,15 @@ describe('P8 client bundle contract', () => {
     expect(source).not.toContain('document.body')
     expect(source).not.toContain('querySelector')
     expect(source).not.toContain('innerHTML')
+  })
+
+  it('injects one stylesheet instead of hardcoding a light or dark palette', () => {
+    const source = readFileSync(clientPath, 'utf8')
+    expect(source).toContain("id = 'prism-style'")
+    expect(source).toContain('CanvasText')
+    expect(source).toContain('prefers-reduced-motion')
+    // No hardcoded page background: the panel must sit on any host theme.
+    expect(source).not.toMatch(/background:\s*['"]#fff/i)
+    expect(source).not.toMatch(/background:\s*['"]#000/i)
   })
 })

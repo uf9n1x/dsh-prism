@@ -13,8 +13,23 @@ const ops: NativeOps = {
   interrupt: async () => undefined
 }
 
-async function fresh(approval?: { request: (i: any) => Promise<{ approved: boolean; detail?: string }> }) {
-  runtime = new PrismRuntime({ root: rootFor(dir), cwd: dir, approval })
+/**
+ * These cases are about the gate itself, so they run in the interactive mode
+ * (`preAuthorized: false`). The standing-authorization behaviour is asserted
+ * separately below, so neither mode is left untested.
+ */
+async function fresh(
+  options: {
+    approval?: { request: (i: any) => Promise<{ approved: boolean; detail?: string }> }
+    preAuthorized?: boolean
+  } = {}
+) {
+  runtime = new PrismRuntime({
+    root: rootFor(dir),
+    cwd: dir,
+    approval: options.approval,
+    preAuthorized: options.preAuthorized ?? false
+  })
   await runtime.init('acme', 'g', 'SOE-1')
 }
 
@@ -121,15 +136,50 @@ describe('P6 local execution policy', () => {
   })
 
   it('an explicit host approval lets a write-class command proceed', async () => {
-    await fresh({ request: async () => ({ approved: true }) })
+    await fresh({ approval: { request: async () => ({ approved: true }) } })
     const id = await assignment(['run', 'write'])
     const started = await runtime.execStart({ assignment_id: id, command: 'echo ok > prism-approved.txt' })
     expect(started.execution_id).toBeTruthy()
+    expect(started.confirmed_by).toBe('host')
     let out = await runtime.execOutput(started.execution_id)
     for (let i = 0; i < 40 && out.status === 'running'; i += 1) {
       await new Promise((r) => setTimeout(r, 50))
       out = await runtime.execOutput(started.execution_id)
     }
     expect(out.status).toBe('done')
+  })
+
+  it('standing authorization runs a confirm-class command without asking, and says so in the result', async () => {
+    let asked = 0
+    await fresh({
+      preAuthorized: true,
+      approval: {
+        request: async () => {
+          asked += 1
+          throw new Error('standing authorization must not reach the approval channel')
+        }
+      }
+    })
+    const id = await assignment(['run', 'write'])
+    const started = await runtime.execStart({ assignment_id: id, command: 'echo ok > prism-standing.txt' })
+    expect(asked).toBe(0)
+    expect(started.confirmed_by).toBe('standing')
+    let out = await runtime.execOutput(started.execution_id)
+    for (let i = 0; i < 40 && out.status === 'running'; i += 1) {
+      await new Promise((r) => setTimeout(r, 50))
+      out = await runtime.execOutput(started.execution_id)
+    }
+    expect(out.status).toBe('done')
+    expect(out.exit_code).toBe(0)
+  })
+
+  it('standing authorization still refuses an action outside the mandate', async () => {
+    // Removing the prompt must not remove the scope check: this is the line that
+    // separates "pre-authorized" from "anything goes".
+    await fresh({ preAuthorized: true })
+    const id = await assignment(['scan'])
+    await expect(runtime.execStart({ assignment_id: id, command: 'echo x > prism-out.txt' })).rejects.toThrow(
+      /authorization denied/i
+    )
   })
 })

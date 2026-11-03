@@ -63,9 +63,9 @@ describe('P2 tool surface', () => {
     }
   })
 
-  it('prism_init refuses to mint a mandate without a host approval channel', async () => {
+  it('prism_init refuses to mint a mandate without a host approval channel when the gate is on', async () => {
     const ctx = stubContext()
-    const factory = new RuntimeFactory(ctx, {})
+    const factory = new RuntimeFactory(ctx, { preAuthorized: false })
     const init = commanderTools(ctx, factory).find((t) => t.name === 'prism_init')!
     await expect(
       init.execute(
@@ -77,7 +77,7 @@ describe('P2 tool surface', () => {
 
   it('prism_init proceeds when the host approves and creates a mandate, then refuses a second init', async () => {
     const ctx = stubContext({ request: async () => 'allowed-once' })
-    const factory = new RuntimeFactory(ctx, {})
+    const factory = new RuntimeFactory(ctx, { preAuthorized: false })
     const init = commanderTools(ctx, factory).find((t) => t.name === 'prism_init')!
     const args = { origin: 'acme', goal: 'g', authorization: 'SOE-1', targets: ['10.0.0.5'], actions: ['scan'] }
     const first = JSON.parse(await init.execute(args, execStub(dir)))
@@ -115,7 +115,7 @@ describe('host approval contract (regression: the first real run failed here)', 
   const initArgs = { origin: 'lab', goal: 'g', authorization: 'SOE-1', targets: ['10.0.0.5'], actions: ['scan'] }
   const callInit = async (approval: { request: (input: any) => Promise<any> } | undefined) => {
     const ctx = stubContext(approval)
-    const factory = new RuntimeFactory(ctx, {})
+    const factory = new RuntimeFactory(ctx, { preAuthorized: false })
     const init = commanderTools(ctx, factory).find((t) => t.name === 'prism_init')!
     try {
       const out = await init.execute(initArgs, execStub(dir))
@@ -169,7 +169,9 @@ describe('host approval contract (regression: the first real run failed here)', 
   it('refuses without asking when the call carries no agent', async () => {
     let asked = 0
     const ctx = stubContext({ request: async () => { asked += 1; return 'allowed-once' } })
-    const init = commanderTools(ctx, new RuntimeFactory(ctx, {})).find((t) => t.name === 'prism_init')!
+    const init = commanderTools(ctx, new RuntimeFactory(ctx, { preAuthorized: false })).find(
+      (t) => t.name === 'prism_init'
+    )!
     await expect(init.execute(initArgs, { cwd: dir })).rejects.toThrow(/no calling agent/i)
     expect(asked).toBe(0)
   })
@@ -259,5 +261,60 @@ describe('native subagent ops use the host contract (regression: spawn threw imm
     await ops.interrupt('child-1')
     expect(calls[0][3].signal).toBeInstanceOf(AbortSignal)
     expect(calls[1][1]).toMatchObject({ kind: 'ancestor' })
+  })
+})
+
+describe('standing authorization (the default: no prompt on the dispatch path)', () => {
+  const args = { origin: 'acme', goal: 'g', targets: ['10.0.0.5'], actions: ['scan', 'run'] }
+
+  it('creates the engagement without asking anyone, and records the basis as standing', async () => {
+    let asked = 0
+    const ctx = stubContext({
+      request: async () => {
+        asked += 1
+        return 'allowed-once'
+      }
+    })
+    const init = commanderTools(ctx, new RuntimeFactory(ctx, {})).find((t) => t.name === 'prism_init')!
+    const out = JSON.parse(await init.execute(args, execStub(dir)))
+    expect(asked).toBe(0)
+    expect(out.ok).toBe(true)
+    expect(out.authorization).toBe('standing')
+    const mandate = JSON.parse(await readFile(join(dir, '.prism', 'mandates', `${String(out.mandate)}.json`), 'utf8')) as {
+      source: string
+      basis: string
+    }
+    expect(mandate.source).toBe('standing')
+    expect(mandate.basis).toContain('standing')
+  })
+
+  it('accepts a call with no authorization reference at all', async () => {
+    // The reference used to be required, which forced the caller to invent one.
+    const ctx = stubContext()
+    const init = commanderTools(ctx, new RuntimeFactory(ctx, {})).find((t) => t.name === 'prism_init')!
+    const out = JSON.parse(await init.execute(args, execStub(dir)))
+    expect(out.ok).toBe(true)
+  })
+
+  it('narrows a mandate without asking, and still refuses to widen', async () => {
+    let asked = 0
+    const ctx = stubContext({
+      request: async () => {
+        asked += 1
+        return 'allowed-once'
+      }
+    })
+    const tools = commanderTools(ctx, new RuntimeFactory(ctx, {}))
+    await tools.find((t) => t.name === 'prism_init')!.execute(args, execStub(dir))
+    const tighten = tools.find((t) => t.name === 'prism_tighten')!
+    const narrowed = JSON.parse(
+      await tighten.execute({ mandate_id: 'md001', actions: ['scan'], reason: 'recon only' }, execStub(dir))
+    )
+    expect(asked).toBe(0)
+    expect(narrowed.ok).toBe(true)
+    expect(narrowed.mandate).not.toBe('md001')
+    await expect(
+      tighten.execute({ mandate_id: narrowed.mandate, actions: ['scan', 'exploit'] }, execStub(dir))
+    ).rejects.toThrow(/only narrow/i)
   })
 })

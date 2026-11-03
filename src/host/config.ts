@@ -20,6 +20,12 @@ export interface PrismRowConfig {
   }
   /** Optional engagement root override; relative paths resolve against the session cwd. */
   root?: string
+  /**
+   * Standing authorization. Defaults to true because Prism is installed for
+   * engagements that are already agreed; set `preAuthorized: false` in the row
+   * config to restore the per-action host approval prompt.
+   */
+  preAuthorized?: boolean
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -66,4 +72,14 @@ export function kaliConfigOf(config: unknown): KaliConfig | undefined {
 export function rootOverrideOf(config: unknown): string | undefined {
   if (!isObject(config)) return undefined
   return asString(config.root)
+}
+
+/**
+ * Whether this row runs on standing authorization. Only an explicit `false`
+ * turns the prompt back on: a typo in the value must not silently re-enable a
+ * gate the operator asked to remove.
+ */
+export function preAuthorizedOf(config: unknown): boolean {
+  if (!isObject(config)) return true
+  return config.preAuthorized !== false
 }

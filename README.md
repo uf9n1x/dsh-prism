@@ -11,14 +11,15 @@ Prism 是 DSH Desktop 的一个**自包含 bundle**：注册 **「Prism 渗透�
 
 | 项 | 状态 |
 |---|---|
-| 源码 + 测试 | ✅ `src/` **34** 个 TS 文件 + `client/` 纯 JS bundle；`tests/` **23 文件 / 187 项全绿** |
+| 源码 + 测试 | ✅ `src/` **34** 个 TS 文件 + `client/` 纯 JS bundle；`tests/` **23 文件 / 200 项全绿** |
 | 构建 | ✅ `npx tsc -p tsconfig.json` → exit 0，产出 `lib/` |
 | 真实安装 | ✅ 独立 profile 上 `dsh plugin add` 成功，页面出现「Prism 渗透模式」 |
 | 真实卸载 | ✅ `plugin remove` 后 bundle 清单与配置零 Prism 行 |
 | 运行态热应用 | ✅ 运行中宿主 `installBundle` / `removeBundle` 均返回 `application: "applied"` |
-| 五视图 UI | ✅ 会话头部入口 → 面板五 tab，五个页签均已截图（`docs/evidence/shots/`） |
+| 五视图 UI | ✅ 入口在「对话 / 轨迹」同排的 `conversation.view` 页签（D27）；图谱是 SVG，五页签均已截图（`docs/evidence/shots/panel-*.png`） |
 | Kali 远程执行 | ✅ SSH transport 已实现并在真实主机往返验证（该机为 Ubuntu，非 Kali 镜像） |
 | 真实靶场全流程 | ✅ 模型驱动、跨进程、经 SSH 在 VM 内对 docker DVWA 靶场跑通（`docs/evidence/lab-run.md`） |
+| 授权模型 | ✅ 常驻预授权（默认不弹审批），范围检查不变；`config.preAuthorized: false` 可回退交互审批（D28） |
 
 完整逐项状态见 `docs/ACCEPTANCE.md`（20 ✅ / 1 🟡 / 0 ⬜）。
 
@@ -242,6 +243,12 @@ prism_verify          # 可选：独立复核
 10. **⚠️ 客户端 bundle 为手写纯 JS，无类型检查**。有 8 项契约测试，但没有 TS 类型约束。
 11. **⚠️ `config.kali` 必须写在 preset patch 行里**，等于复制一份 bundle 改配置；尚未做成用户级设置项。
 12. **⚠️ 覆盖安装只测了「同路径 remove + install」**，没有构造跨版本 diff 的升级场景。
+13. **⚠️ 普通会话也会看到「Prism」页签。** `conversation.view` 的注册项只有 `id/order/label`，
+    无法按会话隐藏，所以非 prism 会话点开是一句空态说明。这是 D27 里明说的代价：换成入口在用户
+    预期位置、面板不再是模态弹窗。宿主若给该 slot 加上按会话过滤，这条应消失。
+14. **⚠️ 默认不弹审批。** 因为插件只用于**已确定授权**的任务（D28）。范围检查（actions / backends /
+    目标 / assignment 状态）一条都没少，但如果你要在别人的环境里用，请先在 preset 行设
+    `config.preAuthorized: false` 把人工闸门开回来。
 
 ---
 
@@ -272,7 +279,7 @@ prism_verify          # 可选：独立复核
 ```bash
 npx tsc -p tsconfig.json --noEmit    # 类型检查
 npx tsc -p tsconfig.json             # 构建 lib/
-npx vitest run                       # 全量：23 files / 187 tests
+npx vitest run                       # 全量：23 files / 200 tests
 npx vitest run tests/host            # 单目录
 ```
 

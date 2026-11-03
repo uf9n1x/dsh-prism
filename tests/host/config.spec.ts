@@ -1,7 +1,7 @@
 // Row config is untrusted YAML: a typo must degrade the backend, never break
 // activation of the whole agent preset.
 import { describe, expect, it } from 'vitest'
-import { kaliConfigOf, rootOverrideOf } from '../../src/host/config.js'
+import { kaliConfigOf, preAuthorizedOf, rootOverrideOf } from '../../src/host/config.js'
 
 describe('kaliConfigOf', () => {
   it('returns undefined when there is no usable host', () => {
@@ -60,5 +60,24 @@ describe('rootOverrideOf', () => {
     expect(rootOverrideOf({ root: '' })).toBeUndefined()
     expect(rootOverrideOf({})).toBeUndefined()
     expect(rootOverrideOf('nope')).toBeUndefined()
+  })
+})
+
+describe('preAuthorizedOf', () => {
+  it('defaults to on, because Prism is installed for already-agreed work', () => {
+    expect(preAuthorizedOf({})).toBe(true)
+    expect(preAuthorizedOf(undefined)).toBe(true)
+    expect(preAuthorizedOf('nope')).toBe(true)
+  })
+
+  it('turns the prompt back on only for an explicit false', () => {
+    expect(preAuthorizedOf({ preAuthorized: false })).toBe(false)
+  })
+
+  it('treats a malformed value as the default rather than as an accidental opt-in', () => {
+    // A typo must not be read as "false" (which would silently re-add prompts)
+    // nor as some third state; the installed default is what the operator chose.
+    expect(preAuthorizedOf({ preAuthorized: 'false' })).toBe(true)
+    expect(preAuthorizedOf({ preAuthorized: 0 })).toBe(true)
   })
 })

@@ -6,7 +6,7 @@
 // a matter of the worker's good behaviour.
 import { workerTools, RuntimeFactory, type AgentContext } from './tools.js'
 import { WORKER_PROTOCOL_SECTION } from '../protocol/sections.js'
-import { kaliConfigOf } from './config.js'
+import { kaliConfigOf, preAuthorizedOf } from './config.js'
 
 export const name = 'prism-worker'
 export const inject = ['tools', 'systemPrompt']
@@ -15,7 +15,11 @@ export const inject = ['tools', 'systemPrompt']
 export function apply(ctx: AgentContext, config?: unknown): void {
   // A worker opens the same .prism/ as its commander. Reconciling from here would
   // mark every live assignment interrupted — including its own — so it never does.
-  const factory = new RuntimeFactory(ctx, { kaliConfig: kaliConfigOf(config), reconcileOnOpen: false })
+  const factory = new RuntimeFactory(ctx, {
+    kaliConfig: kaliConfigOf(config),
+    reconcileOnOpen: false,
+    preAuthorized: preAuthorizedOf(config)
+  })
   for (const definition of workerTools(ctx, factory)) {
     ctx.tools.register(definition)
   }

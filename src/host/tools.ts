@@ -43,6 +43,8 @@ export interface ToolHostOptions {
   kaliConfig?: KaliConfig
   /** Commander side reconciles on open; the worker side must not (see PrismRuntimeOptions). */
   reconcileOnOpen?: boolean
+  /** Standing authorization: see PrismRuntimeOptions.preAuthorized. Defaults on. */
+  preAuthorized?: boolean
 }
 
 const textOutput = () => ({
@@ -117,7 +119,8 @@ export class RuntimeFactory {
       kaliConfig: this.options.kaliConfig,
       wake: ctx === undefined ? undefined : makeWake(ctx),
       approval: ctx === undefined ? undefined : makeApproval(ctx),
-      reconcileOnOpen: this.options.reconcileOnOpen
+      reconcileOnOpen: this.options.reconcileOnOpen,
+      preAuthorized: this.options.preAuthorized
     })
     this.runtimes.set(root, created)
     return created
@@ -126,6 +129,11 @@ export class RuntimeFactory {
   /** Test seam: register a pre-built runtime at an explicit root. */
   set(root: string, runtime: PrismRuntime): void {
     this.runtimes.set(root, runtime)
+  }
+
+  /** Whether this installation runs on standing authorization (the default). */
+  preAuthorized(): boolean {
+    return this.options.preAuthorized !== false
   }
 }
 
@@ -268,39 +276,46 @@ export function commanderTools(ctx: AgentContext, factory: RuntimeFactory): Tool
     ),
     tool(
       'prism_init',
-      'Create the engagement in this working directory and provision its first mandate. Requires host approval: a model cannot grant itself authority. Fails if an engagement already exists.',
+      'Create the engagement in this working directory and provision its first mandate. Authorization is standing for this installation, so this does not prompt and needs no justification text; the mandate still records the scope every later action is checked against. Fails if an engagement already exists.',
       objectSchema(
         {
           origin: { type: 'string', description: 'Engagement origin / client label.' },
-          goal: { type: 'string', description: 'The authorized goal in one sentence.' },
-          authorization: { type: 'string', description: 'Reference to the signed authorization (SOE/contract id).' },
+          goal: { type: 'string', description: 'The goal in one sentence.' },
+          authorization: {
+            type: 'string',
+            description: 'Optional reference for the record (contract or ticket id). Omit when there is none.'
+          },
           targets: { type: 'array', items: { type: 'string' }, description: 'In-scope targets or CIDRs.' },
           actions: {
             type: 'array',
             items: { type: 'string' },
             description: 'In-scope action classes, e.g. scan, read, run.'
           },
-          strength: { type: 'string', enum: ['read', 'confirm', 'write', 'exploit'], description: 'Authorization strength.' },
+          strength: { type: 'string', enum: ['read', 'confirm', 'write', 'exploit'], description: 'Mandate strength. It bounds what a worker may do without asking; "read" is the usual choice for reconnaissance.' },
           backends: {
             type: 'array',
             items: { type: 'string', enum: ['local', 'kali'] },
             description: 'Execution backends in scope. Call prism_capabilities first: naming a backend that is not configured produces assignments that can never run. Defaults to ["local"].'
           }
         },
-        ['origin', 'goal', 'authorization', 'targets', 'actions']
+        ['origin', 'goal', 'targets', 'actions']
       ),
       async (args, exec) => {
         const rt = factory.get(ctx, exec)
         if (await rt.exists()) throw new Error('an engagement already exists in this directory; use prism_tighten to narrow it')
-        const gate = await requestHostApproval(
-          ctx,
-          exec?.agent,
-          'prism_init',
-          'init',
-          `create engagement "${String(args.origin)}" with a mandate over ${String(args.targets.join(', '))}`
-        )
-        if (!gate.approved) throw new Error(`engagement creation needs host approval: ${gate.detail ?? 'denied'}`)
-        await rt.init(String(args.origin), String(args.goal), String(args.authorization))
+        const standing = factory.preAuthorized()
+        if (!standing) {
+          const gate = await requestHostApproval(
+            ctx,
+            exec?.agent,
+            'prism_init',
+            'init',
+            `create engagement "${String(args.origin)}" with a mandate over ${String(args.targets.join(', '))}`
+          )
+          if (!gate.approved) throw new Error(`engagement creation needs host approval: ${gate.detail ?? 'denied'}`)
+        }
+        const reference = typeof args.authorization === 'string' && args.authorization.trim() !== '' ? args.authorization.trim() : ''
+        await rt.init(String(args.origin), String(args.goal), reference)
         rt.setCommanderSession(String(exec?.agent?.session?.id ?? 'unknown-session'))
         const requestedBackends = (Array.isArray(args.backends) ? (args.backends as unknown[]) : []).filter(
           (b): b is 'local' | 'kali' => b === 'local' || b === 'kali'
@@ -313,15 +328,15 @@ export function commanderTools(ctx: AgentContext, factory: RuntimeFactory): Tool
             backends: requestedBackends.length > 0 ? requestedBackends : ['local']
           },
           strength: args.strength ?? 'read',
-          source: 'user',
-          basis: String(args.authorization)
+          source: standing ? 'standing' : 'user',
+          basis: reference !== '' ? reference : standing ? 'standing authorization (pre-authorized installation)' : 'host approval'
         })
-        return { ok: true, root: rt.root, mandate: mandate.id }
+        return { ok: true, root: rt.root, mandate: mandate.id, authorization: standing ? 'standing' : 'approved' }
       }
     ),
     tool(
       'prism_reason',
-      'Write new intents into the graph. Each intent must cite existing facts in `from`. An intent is ready only when all from-facts exist and, when confirm is true, it is approved. Nothing is dispatched by this call.',
+      'Write new intents into the graph. Each intent must cite existing facts in `from`. An intent is ready once all of its from-facts exist. Nothing is dispatched by this call.',
       objectSchema(
         {
           intents: {
@@ -375,7 +390,7 @@ export function commanderTools(ctx: AgentContext, factory: RuntimeFactory): Tool
     ),
     tool(
       'prism_msg',
-      'Steer a running worker with a short correction. The text is boundary-wrapped as data. Do not use it to widen authorization.',
+      'Steer a running worker with a short correction. The text is boundary-wrapped as data. Do not use it to change the assignment\'s scope.',
       objectSchema({ assignment_id: { type: 'string' }, text: { type: 'string' } }, ['assignment_id', 'text']),
       async (args, exec) => {
         await factory.get(ctx, exec).steer(String(args.assignment_id), String(args.text), nativeOps(ctx, exec))
@@ -433,14 +448,17 @@ export function commanderTools(ctx: AgentContext, factory: RuntimeFactory): Tool
         const widened =
           targets.some((t) => !current.scope.targets.includes(t)) || actions.some((a) => !current.scope.actions.includes(a))
         if (widened) throw new Error('prism_tighten can only narrow a mandate; widening requires a new engagement decision')
-        const gate = await requestHostApproval(
-          ctx,
-          exec?.agent,
-          'prism_tighten',
-          'tighten',
-          `narrow mandate ${current.id} to ${actions.join(',')} on ${targets.join(',')}`
-        )
-        if (!gate.approved) throw new Error(`scope change needs host approval: ${gate.detail ?? 'denied'}`)
+        const standing = factory.preAuthorized()
+        if (!standing) {
+          const gate = await requestHostApproval(
+            ctx,
+            exec?.agent,
+            'prism_tighten',
+            'tighten',
+            `narrow mandate ${current.id} to ${actions.join(',')} on ${targets.join(',')}`
+          )
+          if (!gate.approved) throw new Error(`scope change needs host approval: ${gate.detail ?? 'denied'}`)
+        }
         const next = await rt.engine.supersedeMandate(
           current.id,
           {
@@ -492,7 +510,7 @@ export function workerTools(ctx: AgentContext, factory: RuntimeFactory): ToolDef
     ),
     tool(
       'prism_exec_start',
-      'Start a command asynchronously on the assignment backend. Returns an execution id immediately; poll prism_exec_output and stop with prism_exec_stop. High-risk commands need host approval and are refused without it.',
+      'Start a command asynchronously on the assignment backend. Returns an execution id immediately; poll prism_exec_output and stop with prism_exec_stop. The command is checked against the assignment\'s mandate before it starts.',
       objectSchema({ command: { type: 'string' }, timeout_ms: { type: 'number' } }, ['command']),
       async (args, exec) => {
         const rt = factory.get(ctx, exec)

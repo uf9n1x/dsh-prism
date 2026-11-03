@@ -270,9 +270,13 @@ function presetOf(ctx: any, session: any, sessionId: string): { preset: string |
   const rowPreset = persistedRowsPreset(sessionId)
   if (rowPreset !== null) claims.push({ preset: rowPreset, source: 'persisted-rows' })
   if (claims.length === 0) return { preset: null, source: 'none' }
-  // The live projection can lag behind a preset the user just switched to, while
-  // the persisted row already records it. A `prism` claim is the narrower claim
-  // and the surface it unlocks is read-only, so it wins over a lagging default.
+  // A `prism` claim wins over a lagging default. Both the live projection and the
+  // session header can be older than the user's choice: the header records what
+  // the session was created with, and switching preset in the UI updates the row
+  // without rewriting that header. Verified on a real session whose header says
+  // `standard` while its own banner reads "Prism 渗透模式" and its row says
+  // `prism` — trusting the header there would have hidden a genuine Prism panel.
+  // The surface this unlocks is read-only, so the narrower claim is the safe one.
   const prism = claims.find((claim) => claim.preset === PRISM_PRESET)
   if (prism !== undefined) return { preset: prism.preset, source: prism.source }
   return { preset: claims[0]!.preset, source: claims[0]!.source }

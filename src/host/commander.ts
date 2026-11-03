@@ -7,14 +7,17 @@
 import { commanderTools, RuntimeFactory, type AgentContext } from './tools.js'
 import { COMMANDER_PROTOCOL_SECTION } from '../protocol/sections.js'
 import { isExecutionTool } from '../orchestrator/catalog.js'
-import { kaliConfigOf } from './config.js'
+import { kaliConfigOf, preAuthorizedOf } from './config.js'
 
 export const name = 'prism-commander'
 export const inject = ['tools', 'systemPrompt']
 
 /** `config` is the row's YAML block; see src/host/config.ts for the shape. */
 export function apply(ctx: AgentContext, config?: unknown): void {
-  const factory = new RuntimeFactory(ctx, { kaliConfig: kaliConfigOf(config) })
+  const factory = new RuntimeFactory(ctx, {
+    kaliConfig: kaliConfigOf(config),
+    preAuthorized: preAuthorizedOf(config)
+  })
   for (const definition of commanderTools(ctx, factory)) {
     ctx.tools.register(definition)
   }

@@ -75,6 +75,18 @@ export interface PrismRuntimeOptions {
    * `interrupted` for work that had just succeeded.
    */
   reconcileOnOpen?: boolean
+  /**
+   * Standing authorization.
+   *
+   * Prism is installed for engagements that are already authorized, so the
+   * interactive gate is friction rather than safety: it fires on init, on every
+   * scope change, and on every confirm-class command, while the answer is known
+   * in advance. With this on (the default) the mandate is still created and every
+   * action is still checked against it — what disappears is the prompt, not the
+   * record. Set it to false to put the per-action approval back; that path stays
+   * tested so the choice is reversible rather than one-way.
+   */
+  preAuthorized?: boolean
 }
 
 export interface DispatchResult {
@@ -107,6 +119,7 @@ export class PrismRuntime {
   private readonly wake: WakeHooks | undefined
   private readonly approval: ApprovalBroker
   private readonly reconcileOnOpen: boolean
+  private readonly preAuthorized: boolean
   private readonly local: ExecutionBackend
   private readonly kali: ExecutionBackend
   private readonly cwd: string
@@ -122,6 +135,7 @@ export class PrismRuntime {
     this.wake = options.wake
     this.approval = options.approval ?? denyAllApprovals
     this.reconcileOnOpen = options.reconcileOnOpen !== false
+    this.preAuthorized = options.preAuthorized !== false
     this.local = options.local ?? new LocalBackend()
     this.kali = options.kali ?? createKaliBackend(options.kaliConfig ?? {})
     this.commanderSession = options.commanderSession
@@ -403,6 +417,10 @@ export class PrismRuntime {
   /**
    * Start a command through the assignment's backend. Policy order:
    * classify → mandate → confirmation → start. Nothing runs on a partial pass.
+   *
+   * Under standing authorization a confirm-class command does not stop for a
+   * prompt; it records `confirmed_by: 'standing'` instead, so an auditor can
+   * still tell a pre-authorized action from one a human clicked through.
    */
   async execStart(input: {
     assignment_id: string
@@ -415,6 +433,7 @@ export class PrismRuntime {
     ref: string
     classification: ReturnType<typeof classifyCommand>
     chunk: string
+    confirmed_by: 'standing' | 'host' | null
   }> {
     const assignment = await this.engine.getAssignment(input.assignment_id)
     const classification = classifyCommand(input.command)
@@ -428,15 +447,21 @@ export class PrismRuntime {
       ? decision
       : await this.engine.authorize({ assignment_id: assignment.id, action: 'run', backend: assignment.backend })
     if (!effective.allowed) throw new Error(`authorization denied: ${decision.reason ?? 'out of scope'}`)
+    let confirmedBy: 'standing' | 'host' | null = null
     if (classification.requires_confirm || effective.requiresConfirm) {
-      const approval = await this.approval.request({
-        assignmentId: assignment.id,
-        action: classification.action,
-        summary: `run on ${assignment.backend}: ${oneLine(input.command, 200)}`,
-        agent: input.agent
-      })
-      if (!approval.approved) {
-        throw new Error(`confirmation required and not granted: ${approval.detail ?? 'denied'}`)
+      if (this.preAuthorized) {
+        confirmedBy = 'standing'
+      } else {
+        const approval = await this.approval.request({
+          assignmentId: assignment.id,
+          action: classification.action,
+          summary: `run on ${assignment.backend}: ${oneLine(input.command, 200)}`,
+          agent: input.agent
+        })
+        if (!approval.approved) {
+          throw new Error(`confirmation required and not granted: ${approval.detail ?? 'denied'}`)
+        }
+        confirmedBy = 'host'
       }
     }
     const backend = assignment.backend === 'kali' ? this.kali : this.local
@@ -455,7 +480,8 @@ export class PrismRuntime {
       execution_id: execution.id,
       ref: handle.ref,
       classification,
-      chunk: redactSecrets(first.chunk)
+      chunk: redactSecrets(first.chunk),
+      confirmed_by: confirmedBy
     }
   }
 
