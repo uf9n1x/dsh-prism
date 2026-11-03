@@ -13,7 +13,9 @@ export const inject = ['tools', 'systemPrompt']
 
 /** `config` is the row's YAML block; see src/host/config.ts for the shape. */
 export function apply(ctx: AgentContext, config?: unknown): void {
-  const factory = new RuntimeFactory(ctx, { kaliConfig: kaliConfigOf(config) })
+  // A worker opens the same .prism/ as its commander. Reconciling from here would
+  // mark every live assignment interrupted — including its own — so it never does.
+  const factory = new RuntimeFactory(ctx, { kaliConfig: kaliConfigOf(config), reconcileOnOpen: false })
   for (const definition of workerTools(ctx, factory)) {
     ctx.tools.register(definition)
   }

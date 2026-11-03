@@ -11,13 +11,14 @@ Prism 是 DSH Desktop 的一个**自包含 bundle**：注册 **「Prism 渗透�
 
 | 项 | 状态 |
 |---|---|
-| 源码 + 测试 | ✅ `src/` **34** 个 TS 文件 + `client/` 纯 JS bundle；`tests/` **23 文件 / 171 项全绿** |
+| 源码 + 测试 | ✅ `src/` **34** 个 TS 文件 + `client/` 纯 JS bundle；`tests/` **23 文件 / 187 项全绿** |
 | 构建 | ✅ `npx tsc -p tsconfig.json` → exit 0，产出 `lib/` |
 | 真实安装 | ✅ 独立 profile 上 `dsh plugin add` 成功，页面出现「Prism 渗透模式」 |
 | 真实卸载 | ✅ `plugin remove` 后 bundle 清单与配置零 Prism 行 |
 | 运行态热应用 | ✅ 运行中宿主 `installBundle` / `removeBundle` 均返回 `application: "applied"` |
 | 五视图 UI | ✅ 会话头部入口 → 面板五 tab，五个页签均已截图（`docs/evidence/shots/`） |
 | Kali 远程执行 | ✅ SSH transport 已实现并在真实主机往返验证（该机为 Ubuntu，非 Kali 镜像） |
+| 真实靶场全流程 | ✅ 模型驱动、跨进程、经 SSH 在 VM 内对 docker DVWA 靶场跑通（`docs/evidence/lab-run.md`） |
 
 完整逐项状态见 `docs/ACCEPTANCE.md`（20 ✅ / 1 🟡 / 0 ⬜）。
 
@@ -223,23 +224,24 @@ prism_verify          # 可选：独立复核
 
 > 按诚实原则，以下项**没有被写成已完成**。已经闭环的项从本清单移除，但证据留在
 > `docs/evidence/`：面板像素（`p8-ui.md` §8）、`application: applied` 与覆盖安装（`p9-applied.md`）、
-> SSH 真实联通（`p7-kali.md`）都已销项。
+> SSH 真实联通（`p7-kali.md`）、**模型驱动的跨进程派单**（`lab-run.md`，真实靶场上跑通）都已销项。
 
-1. **⚠️ 真实模型驱动的子代理派单未跑通**。`dispatch → startActivation → worker 执行 → subagent/end → 唤醒`
-   的完整跨进程链路需要 LLM 凭证与运行态会话；当前在 `NativeOps` 注入层（stub）上证明。
-   面板里那份 engagement 是 `PrismEngine` 播种的**真实 `.prism/` 内容**，但**不是模型跑出来的**
-   （`docs/evidence/p8-ui.md` §8 写明了这条边界）。
-2. **⚠️ `ctx.credentials` 引用式取凭据未接入**。当前靠输出脱敏 + 不落盘兜底；
+1. **⚠️ mandate 的 `targets` 不约束实际命令。** `authorize()` 只在调用方显式传 `target` 时校验，
+   而 `execStart` 从不传；`actions`/`backends` 是硬约束，`targets` 目前是**声明性**的。
+   要做实需要在执行前从命令里解析目标，属设计改动（`docs/evidence/lab-run.md` §5 第 2 条）。
+2. **⚠️ 执行记录不含命令原文。** `ExecutionRecord` 有 `job_ref`/`result`/`side_effect`，
+   但没有 `command`，审计时无法从引擎侧还原"哪条命令产生了哪条记录"（同上 §5 第 1 条）。
+3. **⚠️ 事实没有去重/合并。** 同一结论被多次观测会产生多条 fact（靶场跑里出现了 f013/f014 与 f008–f010 重复）。
+4. **⚠️ `ctx.credentials` 引用式取凭据未接入**。当前靠输出脱敏 + 不落盘兜底；
    `kali.identityFile` 要用户自己填密钥**路径**，没有走宿主的凭据服务。
-3. **⚠️ Kali 镜像本体未实测**。SSH 通道已在 Ubuntu 22.04 真机上验证（D23），
-   但目标机是不是 Kali 未测；Kali 工具链（如 `msfconsole`）的可用性未验证。
-4. **⚠️ Linux / macOS 本机执行后端未实测**（仅 Windows 路径验证）。
-5. **⚠️ Watchdog 无自动触发源**。`src/runtime/watchdog.ts` 的四操作与准入检查已实现并测试，但"谁在何时调用 `scan()`"尚未接入事件流。
-6. **⚠️ 护栏阈值未独立成模块**。原计划的 `runtime/guardrails.ts`（maxAutoTurns=40 / cooldown / human-reset）未拆出；轮询抑制由 fast path 的设计本身保证（无定时器），但自动轮次上限未实现。
-7. **⚠️ 五视图的数据通道不是 `@Remote`**。用的是同源只读 HTTP 路由（typert codegen 只在 DSH monorepo 的 `build:lib` 里）。视图契约独立于通道，将来可平移（D22）。
-8. **⚠️ 客户端 bundle 为手写纯 JS，无类型检查**。有 8 项契约测试，但没有 TS 类型约束。
-9. **⚠️ `config.kali` 必须写在 preset patch 行里**，等于复制一份 bundle 改配置；尚未做成用户级设置项。
-10. **⚠️ 覆盖安装只测了「同路径 remove + install」**，没有构造跨版本 diff 的升级场景。
+5. **⚠️ Kali 镜像本体未实测**。SSH 通道已在 Ubuntu 上真机验证（D23），但目标机是不是 Kali 未测。
+6. **⚠️ Linux / macOS 本机执行后端未实测**（仅 Windows 路径验证）。
+7. **⚠️ Watchdog 无自动触发源**。`src/runtime/watchdog.ts` 的四操作与准入检查已实现并测试，但"谁在何时调用 `scan()`"尚未接入事件流。
+8. **⚠️ 护栏阈值未独立成模块**。原计划的 `runtime/guardrails.ts`（maxAutoTurns=40 / cooldown / human-reset）未拆出；轮询抑制由 fast path 的设计本身保证（无定时器），但自动轮次上限未实现。
+9. **⚠️ 五视图的数据通道不是 `@Remote`**。用的是同源只读 HTTP 路由（typert codegen 只在 DSH monorepo 的 `build:lib` 里）。视图契约独立于通道，将来可平移（D22）。
+10. **⚠️ 客户端 bundle 为手写纯 JS，无类型检查**。有 8 项契约测试，但没有 TS 类型约束。
+11. **⚠️ `config.kali` 必须写在 preset patch 行里**，等于复制一份 bundle 改配置；尚未做成用户级设置项。
+12. **⚠️ 覆盖安装只测了「同路径 remove + install」**，没有构造跨版本 diff 的升级场景。
 
 ---
 
@@ -270,7 +272,7 @@ prism_verify          # 可选：独立复核
 ```bash
 npx tsc -p tsconfig.json --noEmit    # 类型检查
 npx tsc -p tsconfig.json             # 构建 lib/
-npx vitest run                       # 全量：23 files / 171 tests
+npx vitest run                       # 全量：23 files / 187 tests
 npx vitest run tests/host            # 单目录
 ```
 

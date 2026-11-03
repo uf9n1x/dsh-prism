@@ -41,6 +41,8 @@ export interface ToolHostOptions {
   local?: ExecutionBackend
   kali?: ExecutionBackend
   kaliConfig?: KaliConfig
+  /** Commander side reconciles on open; the worker side must not (see PrismRuntimeOptions). */
+  reconcileOnOpen?: boolean
 }
 
 const textOutput = () => ({
@@ -114,7 +116,8 @@ export class RuntimeFactory {
       kali: this.options.kali,
       kaliConfig: this.options.kaliConfig,
       wake: ctx === undefined ? undefined : makeWake(ctx),
-      approval: ctx === undefined ? undefined : makeApproval(ctx)
+      approval: ctx === undefined ? undefined : makeApproval(ctx),
+      reconcileOnOpen: this.options.reconcileOnOpen
     })
     this.runtimes.set(root, created)
     return created
@@ -150,15 +153,34 @@ function makeWake(ctx: AgentContext) {
  */
 function makeApproval(ctx: AgentContext) {
   return {
-    async request(input: { assignmentId: string; action: string; summary: string }) {
-      return requestHostApproval(ctx, input.action, `assignment ${input.assignmentId}: ${input.summary}`)
+    async request(input: { assignmentId: string; action: string; summary: string; agent?: unknown }) {
+      return requestHostApproval(
+        ctx,
+        input.agent,
+        'prism_exec_start',
+        input.action,
+        `assignment ${input.assignmentId}: ${input.summary}`
+      )
     }
   }
 }
 
-/** Host approval gate. Never satisfied by model text alone. */
+/**
+ * Host approval gate. Never satisfied by model text alone.
+ *
+ * The host contract is `approval.request(req)` with
+ * `req = { agent, toolName, callId?, reason?, displayReason?, signal? }`, and the
+ * only grant in its outcome vocabulary is the string `'allowed-once'` — every
+ * other value (`rejected`, `cancelled`, `unavailable`) is a refusal. An earlier
+ * version of this adapter sent `{ subject, justification, requestedMode }` and
+ * read `result.approved`; the service dereferenced the missing `agent.session`
+ * and threw, so every attempt to mint authority failed with a TypeError instead
+ * of showing the user a decision. Keep this shape in sync with the host.
+ */
 export async function requestHostApproval(
   ctx: AgentContext,
+  agent: unknown,
+  toolName: string,
   action: string,
   summary: string
 ): Promise<{ approved: boolean; detail?: string }> {
@@ -166,14 +188,21 @@ export async function requestHostApproval(
   if (approval === undefined || typeof approval.request !== 'function') {
     return { approved: false, detail: 'no approval service in this host; refusing to mint authority' }
   }
+  if (agent === undefined || agent === null) {
+    return {
+      approved: false,
+      detail: 'this tool call has no calling agent; the host approves per agent, so it cannot be asked on the model\'s behalf'
+    }
+  }
   try {
-    const result = await approval.request({
-      subject: 'prism authority',
-      justification: `${action}: ${summary}`,
-      requestedMode: 'danger-full-access'
+    const outcome = await approval.request({
+      agent,
+      toolName,
+      reason: `${action}: ${summary}`,
+      displayReason: { en: `${action}: ${summary}`, 'zh-CN': `${action}：${summary}` }
     })
-    const approved = result === true || result?.approved === true
-    return approved ? { approved } : { approved, detail: 'user declined' }
+    if (outcome === 'allowed-once') return { approved: true }
+    return { approved: false, detail: `host answered ${typeof outcome === 'string' ? outcome : JSON.stringify(outcome)}` }
   } catch (err) {
     return { approved: false, detail: (err as Error).message }
   }
@@ -183,6 +212,16 @@ export async function requestHostApproval(
 export function nativeOps(ctx: AgentContext, exec: any): NativeOps {
   const subagents = ctx.get('subagents')
   const parent = exec?.agent
+  /**
+   * The host's subagent calls all take an AbortSignal and treat it as required:
+   * `startActivation` and `sendMessage` call `signal.throwIfAborted()` before
+   * doing anything, so passing `undefined` surfaces as
+   * "Cannot read properties of undefined (reading 'throwIfAborted')" rather than
+   * a schema error. Prefer the signal of the tool call so a cancelled turn
+   * propagates, and fall back to a fresh one.
+   */
+  const fallbackSignal = new AbortController().signal
+  const signal: AbortSignal = (exec?.signal as AbortSignal | undefined) ?? fallbackSignal
   return {
     async spawn(request) {
       if (subagents === undefined) throw new Error('subagents service is unavailable in this host')
@@ -196,17 +235,24 @@ export function nativeOps(ctx: AgentContext, exec: any): NativeOps {
           agentPreset: request.preset,
           maxDepth: 1
         },
+        signal,
         delivery: 'parent'
       })
-      return { sessionId: activation.childId as string }
+      const childId = (activation as { childId?: string }).childId
+      if (typeof childId !== 'string' || childId === '') {
+        throw new Error('the host started the worker but returned no child session id')
+      }
+      return { sessionId: childId }
     },
     async send(sessionId, text) {
       if (subagents === undefined) throw new Error('subagents service is unavailable')
-      await subagents.sendMessage(parent, sessionId, [{ type: 'text', text }])
+      if (parent === undefined) throw new Error('prism_msg requires a calling commander agent')
+      await subagents.sendMessage(parent, sessionId, [{ type: 'text', text }], { signal })
     },
     async interrupt(sessionId) {
       if (subagents === undefined) throw new Error('subagents service is unavailable')
-      await subagents.interrupt(sessionId, { agent: parent })
+      if (parent === undefined) throw new Error('prism_kill requires a calling commander agent')
+      await subagents.interrupt(sessionId, { kind: 'ancestor', agent: parent })
     }
   }
 }
@@ -234,7 +280,12 @@ export function commanderTools(ctx: AgentContext, factory: RuntimeFactory): Tool
             items: { type: 'string' },
             description: 'In-scope action classes, e.g. scan, read, run.'
           },
-          strength: { type: 'string', enum: ['read', 'confirm', 'write', 'exploit'], description: 'Authorization strength.' }
+          strength: { type: 'string', enum: ['read', 'confirm', 'write', 'exploit'], description: 'Authorization strength.' },
+          backends: {
+            type: 'array',
+            items: { type: 'string', enum: ['local', 'kali'] },
+            description: 'Execution backends in scope. Call prism_capabilities first: naming a backend that is not configured produces assignments that can never run. Defaults to ["local"].'
+          }
         },
         ['origin', 'goal', 'authorization', 'targets', 'actions']
       ),
@@ -243,15 +294,24 @@ export function commanderTools(ctx: AgentContext, factory: RuntimeFactory): Tool
         if (await rt.exists()) throw new Error('an engagement already exists in this directory; use prism_tighten to narrow it')
         const gate = await requestHostApproval(
           ctx,
+          exec?.agent,
+          'prism_init',
           'init',
           `create engagement "${String(args.origin)}" with a mandate over ${String(args.targets.join(', '))}`
         )
         if (!gate.approved) throw new Error(`engagement creation needs host approval: ${gate.detail ?? 'denied'}`)
         await rt.init(String(args.origin), String(args.goal), String(args.authorization))
         rt.setCommanderSession(String(exec?.agent?.session?.id ?? 'unknown-session'))
+        const requestedBackends = (Array.isArray(args.backends) ? (args.backends as unknown[]) : []).filter(
+          (b): b is 'local' | 'kali' => b === 'local' || b === 'kali'
+        )
         const mandate = await rt.engine.createMandate({
           policy_version: 'v1',
-          scope: { targets: args.targets, actions: args.actions, backends: ['local'] },
+          scope: {
+            targets: args.targets,
+            actions: args.actions,
+            backends: requestedBackends.length > 0 ? requestedBackends : ['local']
+          },
           strength: args.strength ?? 'read',
           source: 'user',
           basis: String(args.authorization)
@@ -375,6 +435,8 @@ export function commanderTools(ctx: AgentContext, factory: RuntimeFactory): Tool
         if (widened) throw new Error('prism_tighten can only narrow a mandate; widening requires a new engagement decision')
         const gate = await requestHostApproval(
           ctx,
+          exec?.agent,
+          'prism_tighten',
           'tighten',
           `narrow mandate ${current.id} to ${actions.join(',')} on ${targets.join(',')}`
         )
@@ -435,7 +497,7 @@ export function workerTools(ctx: AgentContext, factory: RuntimeFactory): ToolDef
       async (args, exec) => {
         const rt = factory.get(ctx, exec)
         const assignmentId = await assignmentFor(rt, exec)
-        return rt.execStart({ assignment_id: assignmentId, ...args })
+        return rt.execStart({ assignment_id: assignmentId, agent: exec?.agent, ...args })
       }
     ),
     tool(
@@ -457,7 +519,7 @@ export function workerTools(ctx: AgentContext, factory: RuntimeFactory): ToolDef
       async (args, exec) => {
         const rt = factory.get(ctx, exec)
         const assignmentId = await assignmentFor(rt, exec)
-        const started = await rt.execStart({ assignment_id: assignmentId, ...args })
+        const started = await rt.execStart({ assignment_id: assignmentId, agent: exec?.agent, ...args })
         return { ...started, hint: 'continue with prism_exec_output using this execution_id' }
       }
     )

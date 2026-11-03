@@ -6,7 +6,7 @@
 // assignment's mandate immediately before it starts. Native DSH capabilities
 // arrive per call (`NativeOps`) so the runtime itself stays testable without a
 // host.
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { PrismEngine } from '../engine/engine.js'
 import { OutboxRunner } from '../runtime/outbox.js'
 import { EventRuntime } from '../runtime/fastpath.js'
@@ -40,6 +40,12 @@ export interface ApprovalBroker {
     action: string
     target?: string
     summary: string
+    /**
+     * The calling agent, when the caller has one. The host approval service is
+     * scoped per agent and rejects the ask without it, so it is threaded through
+     * rather than reconstructed here.
+     */
+    agent?: unknown
   }): Promise<{ approved: boolean; detail?: string }>
 }
 
@@ -58,11 +64,39 @@ export interface PrismRuntimeOptions {
   kali?: ExecutionBackend
   kaliConfig?: KaliConfig
   commanderSession?: string
+  /**
+   * Whether opening this runtime runs restart reconciliation.
+   *
+   * Recovery is a commander-side concern. A worker-side runtime opens the same
+   * `.prism/` directory, and its reconcile would mark every live assignment
+   * `interrupted` — the worker's own included — because it cannot tell "the
+   * previous process died" from "another agent is working right now". A real run
+   * showed exactly that: intents closed correctly but the board said
+   * `interrupted` for work that had just succeeded.
+   */
+  reconcileOnOpen?: boolean
 }
 
 export interface DispatchResult {
   assignment: Assignment
   child_session: string
+}
+
+/**
+ * Roots this process has already reconciled.
+ *
+ * Reconciliation answers one question — "did the previous process die while
+ * work was in flight?" — so it may only run once per root per process. Caching
+ * it per runtime instance is not enough: the commander and the worker reach the
+ * same `.prism/` through different factories, and a second open would demote
+ * live assignments to `interrupted`. A real run showed exactly that (the report
+ * landed, then the board said interrupted seconds later).
+ */
+const RECONCILED = new Map<string, Promise<RecoveryReport>>()
+
+function rootKey(root: string): string {
+  const resolved = resolve(root)
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved
 }
 
 export class PrismRuntime {
@@ -72,6 +106,7 @@ export class PrismRuntime {
   private readonly events: EventRuntime
   private readonly wake: WakeHooks | undefined
   private readonly approval: ApprovalBroker
+  private readonly reconcileOnOpen: boolean
   private readonly local: ExecutionBackend
   private readonly kali: ExecutionBackend
   private readonly cwd: string
@@ -86,6 +121,7 @@ export class PrismRuntime {
     this.events = new EventRuntime(this.engine)
     this.wake = options.wake
     this.approval = options.approval ?? denyAllApprovals
+    this.reconcileOnOpen = options.reconcileOnOpen !== false
     this.local = options.local ?? new LocalBackend()
     this.kali = options.kali ?? createKaliBackend(options.kaliConfig ?? {})
     this.commanderSession = options.commanderSession
@@ -104,13 +140,34 @@ export class PrismRuntime {
   /** Create a fresh engagement (commander-initiated, explicit). */
   async init(origin: string, goal: string, authorization = ''): Promise<void> {
     await this.engine.init(origin, goal, authorization)
-    this.ready = reconcile(this.engine)
+    // A brand-new engagement has nothing to recover, so mark it reconciled.
+    this.ready = Promise.resolve({
+      schema_version: await this.engine.schemaVersion(),
+      interrupted: [],
+      resumable: [],
+      unknown_effects: [],
+      pending_effects: [],
+      review_required: false
+    })
+    RECONCILED.set(rootKey(this.root), this.ready)
     await this.ready
   }
 
   /** Reconcile once per runtime instance; safe to call from every tool. */
   async ensure(): Promise<RecoveryReport> {
-    if (this.ready === undefined) this.ready = reconcile(this.engine)
+    if (!this.reconcileOnOpen) {
+      // Opened for reading/executing only: report the schema, touch nothing.
+      const schema_version = await this.engine.schemaVersion()
+      return { schema_version, interrupted: [], resumable: [], unknown_effects: [], pending_effects: [], review_required: false }
+    }
+    const key = rootKey(this.root)
+    const shared = RECONCILED.get(key)
+    if (shared !== undefined) {
+      this.ready = shared
+      return shared
+    }
+    this.ready = reconcile(this.engine)
+    RECONCILED.set(key, this.ready)
     return this.ready
   }
 
@@ -281,7 +338,7 @@ export class PrismRuntime {
     text: string
     facts?: { title: string; summary: string; evidence?: string[] }[]
     evidence?: string[]
-  }): Promise<{ report_id: string; fact_ids: string[]; intent_closed: string | null }> {
+  }): Promise<{ report_id: string; fact_ids: string[]; intent_closed: string | null; status_note?: string }> {
     const assignment = await this.engine.getAssignment(input.assignment_id)
     const factIds: string[] = []
     for (const fact of input.facts ?? []) {
@@ -316,7 +373,13 @@ export class PrismRuntime {
             : input.kind === 'cancelled'
               ? 'cancelled'
               : 'running'
-    await this.engine.setAssignmentStatus(input.assignment_id, status).catch(() => null)
+    // A refusal here used to be swallowed, which hid a real bug: the report was
+    // written while the assignment stayed `spawned`, so the board never advanced.
+    // Keep the report (its facts are already durable) but say what happened.
+    let status_note: string | undefined
+    await this.engine.setAssignmentStatus(input.assignment_id, status).catch((err: Error) => {
+      status_note = `assignment status not advanced to ${status}: ${err.message}`
+    })
     if (status !== 'running') {
       await this.engine.enqueueEffect({
         kind: 'wake-commander',
@@ -326,7 +389,9 @@ export class PrismRuntime {
       })
       await this.outbox.drain()
     }
-    return { report_id: report.id, fact_ids: factIds, intent_closed: closed }
+    return status_note === undefined
+      ? { report_id: report.id, fact_ids: factIds, intent_closed: closed }
+      : { report_id: report.id, fact_ids: factIds, intent_closed: closed, status_note }
   }
 
   // -- execution -----------------------------------------------------------
@@ -343,6 +408,8 @@ export class PrismRuntime {
     assignment_id: string
     command: string
     timeout_ms?: number
+    /** The calling agent, forwarded to the host approval service when a confirm is needed. */
+    agent?: unknown
   }): Promise<{
     execution_id: string
     ref: string
@@ -365,7 +432,8 @@ export class PrismRuntime {
       const approval = await this.approval.request({
         assignmentId: assignment.id,
         action: classification.action,
-        summary: `run on ${assignment.backend}: ${oneLine(input.command, 200)}`
+        summary: `run on ${assignment.backend}: ${oneLine(input.command, 200)}`,
+        agent: input.agent
       })
       if (!approval.approved) {
         throw new Error(`confirmation required and not granted: ${approval.detail ?? 'denied'}`)

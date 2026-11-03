@@ -6,6 +6,8 @@ lib/
 
 # per-engagement authoritative data (runtime product data, never in source repo)
 .prism/
+# engagement archives kept for evidence but never committed
+.prism.*
 
 # test / tool artifacts
 coverage/

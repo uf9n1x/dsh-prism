@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PrismRuntime, rootFor, renderWorkerBrief, type NativeOps } from '../../src/host/runtime'
+import { PrismEngine } from '../../src/engine/engine'
 
 let dir: string
 let runtime: PrismRuntime
@@ -143,5 +144,77 @@ describe('P3 structured control loop', () => {
     expect(brief).toContain('<<UNTRUSTED_DATA>>')
     expect(brief).toContain('<<END_UNTRUSTED_DATA>>')
     expect(brief).toContain('<prism-assignment')
+  })
+})
+
+describe('restart reconciliation is a commander-side concern', () => {
+  it('a second runtime that only reads does not interrupt live work', async () => {
+    await mandate()
+    const intent = (await runtime.reason([{ description: 'probe the login form', backend: 'local' }]))[0]!
+    await runtime.dispatch({ intent_id: intent.id, brief: 'b', mandate_id: 'md001', backend: 'local' }, fakeOps())
+    const before = await runtime.engine.getAssignment('a001')
+    expect(before.status).toBe('running')
+
+    // The worker opens the same directory through its own runtime. With recovery
+    // on, that open would demote the commander's live assignment.
+    const workerSide = new PrismRuntime({ root: rootFor(dir), cwd: dir, reconcileOnOpen: false })
+    const report = await workerSide.ensure()
+    expect(report.interrupted).toEqual([])
+
+    const after = await runtime.engine.getAssignment('a001')
+    expect(after.status).toBe('running')
+  })
+
+  it('the first open of a stranded root reconciles it, because that is the restart path', async () => {
+    // Build the state the way a dead process would have left it: engine only, no
+    // runtime — on a directory no runtime in this process has opened yet.
+    const strandedDir = join(dir, 'stranded')
+    const engine = new PrismEngine(rootFor(strandedDir))
+    await engine.init('acme', 'g', 'SOE-1')
+    await engine.createMandate({
+      policy_version: 'v1',
+      scope: { targets: ['10.0.0.5'], actions: ['scan'], backends: ['local'] },
+      strength: 'read',
+      source: 'user',
+      basis: 'SOE-1'
+    })
+    const intent = await engine.store.addIntent({ description: 'probe', from: ['goal'], to: null, confirm: false, backend: 'local' })
+    const stranded = await engine.createAssignment({ intent_id: intent.id, mandate_id: 'md001', backend: 'local' })
+    await engine.bindWorkerSession(stranded.id, 'worker-dead')
+
+    const reopened = new PrismRuntime({ root: rootFor(strandedDir), cwd: strandedDir })
+    const report = await reopened.ensure()
+    expect(report.interrupted).toContain(stranded.id)
+    expect((await reopened.engine.getAssignment(stranded.id)).status).toBe('interrupted')
+    expect(report.resumable.map((r) => r.assignment_id)).toContain(stranded.id)
+  })
+
+  it('a later open in the same process reuses that verdict instead of re-interrupting live work', async () => {
+    await mandate()
+    const intent = (await runtime.reason([{ description: 'probe again', backend: 'local' }]))[0]!
+    await runtime.dispatch({ intent_id: intent.id, brief: 'b', mandate_id: 'md001', backend: 'local' }, fakeOps())
+    const live = await runtime.engine.getAssignment(intent.claimed_by ?? 'a001')
+
+    const second = new PrismRuntime({ root: rootFor(dir), cwd: dir })
+    await second.ensure()
+    expect((await runtime.engine.getAssignment(live.id)).status).toBe('running')
+  })
+
+  it('surfaces a status transition the board could not take instead of hiding it', async () => {
+    await mandate()
+    const intent = (await runtime.reason([{ description: 'probe the login form', backend: 'local' }]))[0]!
+    const dispatched = await runtime.dispatch(
+      { intent_id: intent.id, brief: 'b', mandate_id: 'md001', backend: 'local' },
+      fakeOps()
+    )
+    await runtime.engine.setAssignmentStatus(dispatched.assignment.id, 'cancelled')
+    const out = await runtime.report({
+      assignment_id: dispatched.assignment.id,
+      kind: 'ready',
+      text: 'done',
+      facts: [{ title: 'login form', summary: 'a POST form exists' }]
+    })
+    expect(out.status_note).toBeDefined()
+    expect(out.status_note).toContain('cancelled')
   })
 })

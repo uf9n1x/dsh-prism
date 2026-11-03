@@ -36,7 +36,23 @@
             disabled: !!js process.platform !== 'win32'
           - id: tool-fs
             name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              # Both of these rows have a required config: activating them bare
+              # makes the whole worker composition fail with an invalid-config
+              # error, which surfaces as "spawn succeeded, worker never attaches".
+              applyPatch: false
           - id: tool-fs-search
             name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
           - id: prism-worker
             name: 'dsh-prism/worker'
+            # Optional remote execution target (see src/host/config.ts). Without a
+            # host the backend stays local-only and reports itself unconfigured.
+            # Uncomment and point at your own lab VM to enable remote execution:
+            # config:
+            #   kali:
+            #     host: 10.0.0.5
+            #     user: kali
+            #     identityFile: /home/you/.ssh/id_ed25519
+            #     connectTimeoutSec: 8
