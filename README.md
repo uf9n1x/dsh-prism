@@ -108,6 +108,27 @@ dsh --profile desktop --dump-config | Select-String -Pattern 'prism-host|preset-
 > `preset-prism ... pending (waiting for service: agentPresets)`。这是正常现象——请用含这些服务的
 > **web / desktop profile**（也就是你正常用的客户端）。
 
+### 3.4 常见安装问题：`ERR_PNPM_UNEXPECTED_STORE`
+
+现象（与 Prism 无关，装**任何**插件都会遇到）：
+```text
+The dependencies at "...\profiles\<profile>\node_modules" are currently linked from the store at
+"...\pnpm\store\v10". pnpm now wants to use the store at "...\pnpm\store\v11" ...
+```
+原因：该 profile 的 `node_modules` 是用**旧版 pnpm** 装的，而 DSH 运行时自带的 pnpm 已升级到新大版本，
+两个 store 目录格式不兼容，pnpm 拒绝在旧 store 上继续链接。
+
+修复（一次性，**需先完全退出 DSH Desktop**，再用外部终端操作该 profile）：
+```powershell
+cd C:\Users\<你>\.dsh\profiles\<profile>
+# 用与 DSH 同版本的 pnpm（本例 11.x）把依赖重链到新 store：
+& "C:\Users\<你>\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe" `
+  "<dsh-install>\resources\runtime\primary-runtime\dependencies\pnpm\bin\pnpm.mjs" install
+```
+完成后再打开 Desktop，用「插件面板」或 `dsh plugin add` 安装即恢复正常。
+若安装日志出现 `Ignored build scripts`，补跑一次 `... pnpm.mjs rebuild`。迁移前最好备份该 profile 的
+`package.json` / `pnpm-lock.yaml`，出问题可用系统旧版 pnpm 还原。
+
 ---
 
 ## 4. 卸载
