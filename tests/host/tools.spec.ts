@@ -54,6 +54,14 @@ describe('P2 tool surface', () => {
     for (const t of tools) expect(COMMANDER_TOOL_NAMES as readonly string[]).not.toContain(t.name)
   })
 
+  it('exposes prism_effect_resolve on the commander surface only (T1)', () => {
+    const ctx = stubContext()
+    const commanderNames = commanderTools(ctx, new RuntimeFactory(ctx)).map((t) => t.name)
+    const workerNames = workerTools(ctx, new RuntimeFactory(ctx)).map((t) => t.name)
+    expect(commanderNames).toContain('prism_effect_resolve')
+    expect(workerNames).not.toContain('prism_effect_resolve')
+  })
+
   it('every tool declares a JSON-schema input and string output', () => {
     const ctx = stubContext()
     for (const t of [...commanderTools(ctx, new RuntimeFactory(ctx)), ...workerTools(ctx, new RuntimeFactory(ctx))]) {

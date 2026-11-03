@@ -13,6 +13,7 @@ export const COMMANDER_TOOL_NAMES = [
   'prism_msg',
   'prism_kill',
   'prism_verify',
+  'prism_effect_resolve',
   'prism_capabilities',
   'prism_tighten'
 ] as const

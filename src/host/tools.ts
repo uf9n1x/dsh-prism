@@ -415,6 +415,29 @@ export function commanderTools(ctx: AgentContext, factory: RuntimeFactory): Tool
       async (args, exec) => factory.get(ctx, exec).verify(String(args.intent_id), String(args.description))
     ),
     tool(
+      'prism_effect_resolve',
+      'Resolve an effect whose outcome was unknown after an external check. Only an effect currently unknown can be resolved. done = the side effect did land; failed = it did not and is closed; pending = confirmed it did not land, so the outbox may retry it later (this call does NOT replay it). Records a commander audit report.',
+      objectSchema(
+        {
+          effect_id: { type: 'string', description: 'The unknown effect id (xNNN).' },
+          outcome: { type: 'string', enum: ['done', 'failed', 'pending'], description: 'What the external check established.' },
+          note: { type: 'string', description: 'Short note on how it was verified; kept as the audit trace.' }
+        },
+        ['effect_id', 'outcome', 'note']
+      ),
+      async (args, exec) => {
+        const outcome = String(args.outcome)
+        if (outcome !== 'done' && outcome !== 'failed' && outcome !== 'pending') {
+          throw new Error(`outcome must be done, failed or pending; got ${outcome}`)
+        }
+        return factory.get(ctx, exec).resolveEffect({
+          effect_id: String(args.effect_id),
+          outcome,
+          note: String(args.note)
+        })
+      }
+    ),
+    tool(
       'prism_capabilities',
       'List the capabilities this Prism mode exposes (tools, backends, presets, worker execution surface). Read-only.',
       objectSchema({}),

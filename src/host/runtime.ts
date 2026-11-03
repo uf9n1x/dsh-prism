@@ -619,6 +619,28 @@ export class PrismRuntime {
     return this.outbox.drain()
   }
 
+  /**
+   * Resolve an `unknown` effect after an external check (commander-only path).
+   *
+   * Only an effect whose outcome is `unknown` can be resolved. `done`/`failed`
+   * close it; `pending` re-arms the outbox so the ordinary `drain()` may retry —
+   * this call itself never replays the side effect. Every resolution leaves one
+   * commander-authored report as the audit trail.
+   */
+  async resolveEffect(input: {
+    effect_id: string
+    outcome: 'done' | 'failed' | 'pending'
+    note: string
+  }): Promise<Effect> {
+    const effect = await this.engine.resolveUnknownEffect(input.effect_id, input.outcome, input.note)
+    await this.engine.addCommanderReport({
+      ref: effect.refs[0] ?? `effect:${effect.id}`,
+      kind: 'progress',
+      text: `commander resolved unknown effect ${effect.id} as ${input.outcome}: ${oneLine(redactSecrets(input.note), 300)}`
+    })
+    return effect
+  }
+
   watchdog(limits = { stallMs: 180_000, maxActive: 4 }): Watchdog {
     return new Watchdog(this.engine, limits)
   }

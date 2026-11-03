@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PrismRuntime, rootFor, renderWorkerBrief, type NativeOps } from '../../src/host/runtime'
 import { PrismEngine } from '../../src/engine/engine'
+import { OutboxRunner } from '../../src/runtime/outbox'
 
 let dir: string
 let runtime: PrismRuntime
@@ -242,6 +243,54 @@ describe('P3 structured control loop', () => {
     expect(brief).toContain('<<UNTRUSTED_DATA>>')
     expect(brief).toContain('<<END_UNTRUSTED_DATA>>')
     expect(brief).toContain('<prism-assignment')
+  })
+})
+
+describe('T1 unknown-effect resolution', () => {
+  async function unknownEffect() {
+    const fx = await runtime.engine.enqueueEffect({ kind: 'http', payload: { url: 'x' } })
+    await runtime.engine.markEffectUnknown(fx.id)
+    return fx
+  }
+
+  it('resolves an unknown effect to done and leaves a commander audit report', async () => {
+    const fx = await unknownEffect()
+    const out = await runtime.resolveEffect({ effect_id: fx.id, outcome: 'done', note: 'idempotent probe confirmed it landed' })
+    expect(out.status).toBe('done')
+    const audit = (await runtime.engine.listReports()).find((r) => r.assignment_id.startsWith('effect:'))
+    expect(audit).toBeDefined()
+    expect(audit!.text).toMatch(/commander/)
+    expect(audit!.text).toContain(fx.id)
+  })
+
+  it('resolves an unknown effect to failed and records the note', async () => {
+    const fx = await unknownEffect()
+    const out = await runtime.resolveEffect({ effect_id: fx.id, outcome: 'failed', note: 'target confirmed unaffected' })
+    expect(out.status).toBe('failed')
+    expect(out.payload.resolved_note).toBe('target confirmed unaffected')
+  })
+
+  it('resolves to pending without replaying it here; a later drain is the retry', async () => {
+    const fx = await unknownEffect()
+    const runner = new OutboxRunner(runtime.engine)
+    let calls = 0
+    runner.register('http', async () => {
+      calls += 1
+      return { ok: true }
+    })
+    // An unknown effect is never claimable before a human decision.
+    expect((await runner.drain()).attempted).toEqual([])
+    const out = await runtime.resolveEffect({ effect_id: fx.id, outcome: 'pending', note: 'confirmed no side effect' })
+    expect(out.status).toBe('pending')
+    expect(calls).toBe(0) // resolving must NOT itself replay the side effect
+    const report = await runner.drain()
+    expect(report.done).toEqual([fx.id])
+    expect(calls).toBe(1)
+  })
+
+  it('refuses to resolve an effect that is not unknown', async () => {
+    const fx = await runtime.engine.enqueueEffect({ kind: 'http', payload: {} }) // still pending
+    await expect(runtime.resolveEffect({ effect_id: fx.id, outcome: 'done', note: 'x' })).rejects.toThrow(/not unknown/i)
   })
 })
 

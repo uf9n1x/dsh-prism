@@ -346,6 +346,26 @@ export class PrismEngine {
     return this.store.listEntities(ENTITY_DIRS.reports, ReportSchema)
   }
 
+  /**
+   * Commander-authored audit report not bound to a live worker. Used where the
+   * commander records a decision (e.g. resolving an unknown effect) that must
+   * leave a durable trail but does not come from a worker assignment.
+   */
+  async addCommanderReport(input: { ref: string; kind: ReportKind; text: string }): Promise<Report> {
+    const id = await this.store.nextId('report', 'r', ENTITY_DIRS.reports)
+    const report = ReportSchema.parse({
+      id,
+      assignment_id: input.ref,
+      kind: input.kind,
+      text: input.text,
+      facts: [],
+      evidence: [],
+      created_at: nowIso()
+    })
+    await this.store.writeEntity(ENTITY_DIRS.reports, id, report)
+    return report
+  }
+
   // -- events (persist first, then route) ----------------------------------
 
   /**
@@ -445,8 +465,18 @@ export class PrismEngine {
     })
   }
 
-  /** Resolve an `unknown` effect after an external check, without re-running it. */
-  async resolveUnknownEffect(id: string, outcome: 'done' | 'failed', note: string): Promise<Effect> {
+  /**
+   * Resolve an `unknown` effect after an external check, without running it.
+   *
+   * `done`    → the side effect did land; closed.
+   * `failed`  → it did not land; closed.
+   * `pending` → confirmed NOT to have landed, so the outbox may retry it later.
+   *
+   * Resolving never replays anything itself: `pending` only re-arms the record,
+   * and the ordinary `drain()` is the retry (a human decision, not a silent
+   * replay). Only an effect currently `unknown` can be resolved.
+   */
+  async resolveUnknownEffect(id: string, outcome: 'done' | 'failed' | 'pending', note: string): Promise<Effect> {
     const current = await this.getEffect(id)
     if (current.status !== 'unknown') {
       throw new Error(`effect ${id} is ${current.status}, not unknown; nothing to resolve`)
