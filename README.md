@@ -235,7 +235,8 @@ frontier 重新派单——失败不是结果（D30）。
 > 按诚实原则，以下项**没有被写成已完成**。已经闭环的项从本清单移除，但证据留在
 > `docs/evidence/`：面板像素（`p8-ui.md` §8）、`application: applied` 与覆盖安装（`p9-applied.md`）、
 > SSH 真实联通（`p7-kali.md`）、**模型驱动的跨进程派单**（`lab-run.md`）、
-> **targets 对实际命令的约束 / 执行记录含命令 / 事实去重 / 接班**（D29–D31，2026-11-03 审计轮）都已销项。
+> **targets 对实际命令的约束 / 执行记录含命令 / 事实去重 / 接班**（D29–D31，审计轮）、
+> **unknown 结案工具 / 事件边界护栏 / Watchdog 类型屏障 / 凭据引用 / 跨版本升级**（D32–D36，续作轮 v3）都已销项。
 
 1. **⚠️ 命令里解析不出端点时不做目标校验。** `targetsInCommand()` 只认 URL host、IPv4/CIDR 和
    `user@host`；`whoami`、`cat /etc/passwd` 这类本机命令不产生端点，因此不会被目标列表拦住
@@ -243,27 +244,24 @@ frontier 重新派单——失败不是结果（D30）。
 2. **⚠️ 回环地址恒在范围内。** `127.0.0.1` / `localhost` / `::1` / `0.0.0.0` 视为本机，不受 targets 约束；
    如果目标是通过本机代理/端口转发访问的，targets 拦不住。
 3. **⚠️ 事实去重只认完全相同的 `title+summary`。** 换个说法的同一结论仍会产生新 fact（D30）。
-4. **⚠️ `ctx.credentials` 引用式取凭据未接入**。当前靠输出脱敏 + 不落盘兜底；
-   `kali.identityFile` 要用户自己填密钥**路径**，没有走宿主的凭据服务。
-5. **⚠️ `unknown` 副作用没有工具可结案。** 引擎有 `resolveUnknownEffect()`，但没有对应工具，
-   目前只能由运维直接改 `effects/*.json` 或调代码。README §6 说的"人工核查"就是这个意思。
-6. **⚠️ 多进程同时写同一 `.prism/` 不支持**（D26 的后果）：同一进程内靠"每 root 只恢复一次"兜住，
+4. **⚠️ 多进程同时写同一 `.prism/` 不支持**（D26 的后果）：同一进程内靠"每 root 只恢复一次"兜住，
    跨进程没有租约。
-7. **⚠️ Kali 镜像本体未实测**。SSH 通道已在 Ubuntu 上真机验证（D23），但目标机是不是 Kali 未测。
-8. **⚠️ Linux / macOS 本机执行后端未实测**（仅 Windows 路径验证）。
-9. **⚠️ Watchdog 无自动触发源**。`src/runtime/watchdog.ts` 的四操作与准入检查已实现并测试，
-   但除测试外没有调用者——`PrismRuntime.watchdog()` 返回的实例不会被任何事件流驱动。
-10. **⚠️ 护栏阈值未独立成模块**。原计划的 `runtime/guardrails.ts`（maxAutoTurns=40 / cooldown / human-reset）未拆出；轮询抑制由 fast path 的设计本身保证（无定时器），但自动轮次上限未实现。
-11. **⚠️ 五视图的数据通道不是 `@Remote`**。用的是同源只读 HTTP 路由（typert codegen 只在 DSH monorepo 的 `build:lib` 里）。视图契约独立于通道，将来可平移（D22）。
-12. **⚠️ 客户端 bundle 为手写纯 JS，无类型检查**。有 13 项契约测试，但没有 TS 类型约束。
-13. **⚠️ `config.kali` 必须写在 preset patch 行里**，等于复制一份 bundle 改配置；尚未做成用户级设置项。
-14. **⚠️ 覆盖安装只测了「同路径 remove + install」**，没有构造跨版本 diff 的升级场景。
-15. **⚠️ 普通会话也会看到「Prism」页签。** `conversation.view` 的注册项只有 `id/order/label`，
+5. **⚠️ Kali 镜像本体未实测**。SSH 通道已在 Ubuntu 上真机验证（D23），`identityRef` 引用也已打通（D35），
+   但目标机是不是 Kali 未测。
+6. **⚠️ Linux / macOS 本机执行后端未实测**（仅 Windows 路径验证）。
+7. **⚠️ 五视图的数据通道不是 `@Remote`**。用的是同源只读 HTTP 路由（typert codegen 只在 DSH monorepo 的 `build:lib` 里）。视图契约独立于通道，将来可平移（D22）。
+8. **⚠️ 客户端 bundle 为手写纯 JS，无类型检查**。有 13 项契约测试，但没有 TS 类型约束。
+9. **⚠️ `config.kali` 必须写在 preset patch 行里**，等于复制一份 bundle 改配置；尚未做成用户级设置项。
+10. **⚠️ 普通会话也会看到「Prism」页签。** `conversation.view` 的注册项只有 `id/order/label`，
     无法按会话隐藏，所以非 prism 会话点开是一句空态说明。这是 D27 里明说的代价：换成入口在用户
     预期位置、面板不再是模态弹窗。宿主若给该 slot 加上按会话过滤，这条应消失。
-16. **⚠️ 默认不弹审批。** 因为插件只用于**已确定授权**的任务（D28）。范围检查（actions / backends /
+11. **⚠️ 默认不弹审批。** 因为插件只用于**已确定授权**的任务（D28）。范围检查（actions / backends /
     目标 / assignment 状态）一条都没少，但如果你要在别人的环境里用，请先在 preset 行设
     `config.preAuthorized: false` 把人工闸门开回来。
+12. **⚠️ 真实凭据服务连远端未单独跑。** `identityRef` 的解析/临时密钥/fail-closed 由单测覆盖（D35），
+    真机复验用的是免交互 ssh（key 已在 `~/.ssh`），未接宿主 `credentials` 服务连一次远端。
+13. **⚠️ 打包安装（非 pnpm link）的文件级清理未验证。** DSH 本地安装用 `link:`，没有"旧版本文件副本"
+    可清理；若将来发布到 npm 走真实打包安装，需要单独验证升级/卸载的文件级 diff。
 
 ## 9. 数据模型速查
 
