@@ -13,6 +13,8 @@ export interface PrismRowConfig {
     host?: string
     user?: string
     port?: number
+    /** DSH credential reference for the SSH private key. Never the key itself. */
+    identityRef?: string
     identityFile?: string
     enabled?: boolean
     strictHostKeyChecking?: boolean
@@ -59,6 +61,8 @@ export function kaliConfigOf(config: unknown): KaliConfig | undefined {
   if (user !== undefined) result.user = user
   const port = asPort(raw.port)
   if (port !== undefined) result.port = port
+  const identityRef = asString(raw.identityRef)
+  if (identityRef !== undefined) result.identityRef = identityRef
   const identityFile = asString(raw.identityFile)
   if (identityFile !== undefined) result.identityFile = identityFile
   if (raw.enabled === false) result.enabled = false

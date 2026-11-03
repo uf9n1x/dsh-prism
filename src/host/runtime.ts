@@ -17,6 +17,7 @@ import { classifyCommand, type ExecutionBackend, type HealthStatus } from '../ex
 import { LocalBackend } from '../exec/local.js'
 import { createKaliBackend } from '../exec/ssh.js'
 import type { KaliConfig } from '../exec/kali.js'
+import type { CredentialResolver } from '../exec/credential.js'
 import { Watchdog } from '../runtime/watchdog.js'
 import type { Intent } from '../graph/types.js'
 import type { Assignment, Effect, ExecutionRecord, ReportKind } from '../domain/index.js'
@@ -64,6 +65,11 @@ export interface PrismRuntimeOptions {
   local?: ExecutionBackend
   kali?: ExecutionBackend
   kaliConfig?: KaliConfig
+  /**
+   * DSH credentials service, used to resolve `kaliConfig.identityRef` at call
+   * time. When absent, a configured identityRef fails closed instead of dialing.
+   */
+  credentials?: CredentialResolver
   commanderSession?: string
   /**
    * Whether opening this runtime runs restart reconciliation.
@@ -138,7 +144,9 @@ export class PrismRuntime {
     this.reconcileOnOpen = options.reconcileOnOpen !== false
     this.preAuthorized = options.preAuthorized !== false
     this.local = options.local ?? new LocalBackend()
-    this.kali = options.kali ?? createKaliBackend(options.kaliConfig ?? {})
+    this.kali =
+      options.kali ??
+      createKaliBackend(options.kaliConfig ?? {}, { credentials: options.credentials })
     this.commanderSession = options.commanderSession
     this.outbox.register('wake-commander', async (effect) => {
       const text = typeof effect.payload.nudge === 'string' ? effect.payload.nudge : 'prism: state changed'

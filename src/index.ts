@@ -92,10 +92,16 @@ export function apply(ctx: any): void {
         const stopReason: string = String(payload?.stopReason ?? 'unknown')
         const cwd = cwdOfAgent(ctx, parent)
         const commanderSession: string | undefined = parent?.session?.id
+        const credentialsSvc = ctx.get?.('credentials')
+        const credentials =
+          credentialsSvc !== undefined && typeof credentialsSvc.resolve === 'function'
+            ? { resolve: (ref: string) => credentialsSvc.resolve(ref) }
+            : undefined
         const runtime = new PrismRuntime({
           root: rootFor(cwd),
           cwd,
           wake: { wakeCommander: wake },
+          credentials,
           commanderSession
         })
         if (!(await runtime.exists())) return

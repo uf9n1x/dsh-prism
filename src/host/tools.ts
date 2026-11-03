@@ -9,6 +9,7 @@ import { PrismRuntime, rootFor, type NativeOps } from './runtime.js'
 import { COMMANDER_TOOL_NAMES, WORKER_TOOL_NAMES } from '../orchestrator/catalog.js'
 import type { ExecutionBackend } from '../exec/backend.js'
 import type { KaliConfig } from '../exec/kali.js'
+import type { CredentialResolver } from '../exec/credential.js'
 
 export interface ToolTextBlock {
   type: 'text'
@@ -119,6 +120,7 @@ export class RuntimeFactory {
       kaliConfig: this.options.kaliConfig,
       wake: ctx === undefined ? undefined : makeWake(ctx),
       approval: ctx === undefined ? undefined : makeApproval(ctx),
+      credentials: ctx === undefined ? undefined : makeCredentials(ctx),
       reconcileOnOpen: this.options.reconcileOnOpen,
       preAuthorized: this.options.preAuthorized
     })
@@ -171,6 +173,21 @@ function makeApproval(ctx: AgentContext) {
       )
     }
   }
+}
+
+/**
+ * Adapt the DSH credentials service to the narrow resolver Prism uses. Returns
+ * undefined when the host exposes no credentials service — a configured
+ * identityRef then fails closed instead of falling back to another auth mode.
+ */
+function makeCredentials(ctx: AgentContext): CredentialResolver | undefined {
+  const service = ctx.get('credentials')
+  if (service === undefined || typeof service.resolve !== 'function') return undefined
+  const resolver: CredentialResolver = { resolve: (ref: string) => service.resolve(ref) }
+  if (typeof service.describe === 'function') {
+    resolver.describe = (ref: string) => service.describe(ref)
+  }
+  return resolver
 }
 
 /**
